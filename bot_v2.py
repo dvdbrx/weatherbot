@@ -903,10 +903,12 @@ def run_loop():
     _cal = load_cal()
 
     print(f"\n{'='*55}")
-    print(f"  WEATHERBET — STARTING")
+    print(f"  WEATHERBET — STARTED")
     print(f"{'='*55}")
+    
+    st = load_state()
     print(f"  Cities:     {len(LOCATIONS)}")
-    print(f"  Balance:    ${BALANCE:,.0f} | Max bet: ${MAX_BET}")
+    print(f"  Balance:    ${st['balance']:,.2f} | Max bet: ${MAX_BET}")
     print(f"  Scan:       {SCAN_INTERVAL//60} min | Monitor: {MONITOR_INTERVAL//60} min")
     print(f"  Sources:    ECMWF + HRRR(US) + METAR(D+0)")
     print(f"  Data:       {DATA_DIR.resolve()}")
