@@ -41,6 +41,7 @@ MIN_HOURS        = _cfg.get("min_hours", 2.0)
 MAX_HOURS        = _cfg.get("max_hours", 72.0)
 KELLY_FRACTION   = _cfg.get("kelly_fraction", 0.25)
 MAX_SLIPPAGE     = _cfg.get("max_slippage", 0.03)  # max allowed ask-bid spread
+SANDBAG_SLIPPAGE = _cfg.get("sandbag_slippage", 0.03) # penalty added to ask price
 SCAN_INTERVAL    = _cfg.get("scan_interval", 3600)   # every hour
 CALIBRATION_MIN  = _cfg.get("calibration_min", 30)
 VC_KEY           = os.getenv("VISUAL_CROSSING_KEY", "")
@@ -615,12 +616,17 @@ def scan_and_update():
                     if ask >= MAX_PRICE or volume < MIN_VOLUME:
                         continue
 
+                    # SANDBAGGING: dramatically worsen the ask price logic
+                    # We assume we clear out the orderbook and add our synthetic slippage
+                    # Cap it at 0.99 so it doesn't break math
+                    sandbagged_ask = min(ask + SANDBAG_SLIPPAGE + (spread * 0.5), 0.99)
+
                     p  = bucket_prob(forecast_temp, t_low, t_high, sigma)
-                    ev = calc_ev(p, ask)   # EV calculated from ask
+                    ev = calc_ev(p, sandbagged_ask)   # EV calculated from sandbagged ask
                     if ev < MIN_EV:
                         continue
 
-                    kelly = calc_kelly(p, ask)
+                    kelly = calc_kelly(p, sandbagged_ask)
                     size  = bet_size(kelly, balance)
                     if size < 0.50:
                         continue
@@ -630,10 +636,10 @@ def scan_and_update():
                         "question":     o["question"],
                         "bucket_low":   t_low,
                         "bucket_high":  t_high,
-                        "entry_price":  ask,       # enter at ask
+                        "entry_price":  round(sandbagged_ask, 4),       # enter at sandbagged ask
                         "bid_at_entry": bid,
                         "spread":       spread,
-                        "shares":       round(size / ask, 2),
+                        "shares":       round(size / sandbagged_ask, 2),
                         "cost":         size,
                         "p":            round(p, 4),
                         "ev":           round(ev, 4),
