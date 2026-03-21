@@ -1,4 +1,5 @@
 import time
+import json
 from datetime import datetime, timezone
 from rich.live import Live
 from rich.table import Table
@@ -7,7 +8,7 @@ from rich.panel import Panel
 from rich.align import Align
 from rich.text import Text
 
-from bot_v2 import load_state, load_all_markets
+from bot_v2 import load_state, load_all_markets, CALIBRATION_FILE
 
 def generate_dashboard() -> Layout:
     state = load_state()
@@ -49,6 +50,23 @@ def generate_dashboard() -> Layout:
     else:
         overview_text.append("No trades yet", style="dim")
         
+    cal_str = " | Algorithm Reworked: Awaiting first trade resolution"
+    try:
+        if CALIBRATION_FILE.exists():
+            cal = json.loads(CALIBRATION_FILE.read_text(encoding="utf-8"))
+            latest = None
+            for k, v in cal.items():
+                vt = v.get("updated_at")
+                if vt and (not latest or vt > latest):
+                    latest = vt
+            if latest:
+                cal_dt = datetime.fromisoformat(latest)
+                cd = int((datetime.now(timezone.utc) - cal_dt).total_seconds() // 3600)
+                cd = max(0, cd)
+                cal_str = f" | Algorithm Reworked: {cd}h ago"
+    except Exception:
+        pass
+
     # Append Uptime and Last Check stats
     uptime_str_display = ""
     started_iso = state.get("last_started")
@@ -70,10 +88,11 @@ def generate_dashboard() -> Layout:
                 scan_str = f"{int(diff//60)}m ago"
                 
             uptime_str_display = f" | Uptime: {int(h)}h {int(m)}m | Last Scan: {scan_str}"
-            overview_text.append(uptime_str_display, style="dim cyan")
         except Exception:
             pass
             
+    overview_text.append(uptime_str_display + cal_str, style="dim cyan")
+    
     overview_panel = Panel(Align.center(overview_text), title="[bold]Overview[/bold]", border_style="blue")
     
     # Create Open Positions Table

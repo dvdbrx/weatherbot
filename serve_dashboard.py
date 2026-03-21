@@ -3,7 +3,22 @@ import http.server
 import socketserver
 from urllib.parse import urlparse
 import logging
-from bot_v2 import load_state, load_all_markets
+from bot_v2 import load_state, load_all_markets, CALIBRATION_FILE
+
+def get_last_calibration():
+    if not CALIBRATION_FILE.exists():
+        return None
+    try:
+        cal = json.loads(CALIBRATION_FILE.read_text(encoding="utf-8"))
+        latest = None
+        for k, v in cal.items():
+            vt = v.get("updated_at")
+            if vt:
+                if not latest or vt > latest:
+                    latest = vt
+        return latest
+    except:
+        return None
 
 PORT = 8000
 HTML_FILE = "sim_dashboard_repost.html"
@@ -50,6 +65,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                     "peak_balance": state.get("balance", 10000.0),
                     "last_started": state.get("last_started"),
                     "last_updated": state.get("last_updated"),
+                    "last_calibrated": get_last_calibration(),
                     "positions": {},
                     "trades": []
                 }

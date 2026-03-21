@@ -94,6 +94,7 @@ body::after{content:'';position:fixed;inset:0;background-image:linear-gradient(r
   <div class="header-right">
     <div class="live-pill"><div class="dot" id="status-dot"></div><span id="status-text">CONNECTING...</span></div>
     <div class="ts" id="uptime-text" style="color:var(--green)"></div>
+    <div class="ts" id="calib-text" style="color:#d4a373; margin-top: 4px; font-size: 11px;"></div>
     <div class="ts" id="ts">—</div>
   </div>
 </div>
@@ -276,8 +277,16 @@ async function loadData(){
         const scanDiffS = Math.floor((nowDt - upDt) / 1000);
         const scanStr = scanDiffS < 60 ? `${scanDiffS}s ago` : `${Math.floor(scanDiffS/60)}m ago`;
         document.getElementById('uptime-text').textContent = `Uptime: ${h}h ${m}m | Ping: ${scanStr}`;
+        if (sim.last_calibrated) {
+            const calDt = new Date(sim.last_calibrated);
+            const cd = Math.floor((nowDt - calDt) / 3600000);
+            document.getElementById('calib-text').textContent = `Algorithm Reworked: ${cd}h ago`;
+        } else {
+            document.getElementById('calib-text').textContent = `Algorithm Reworked: Awaiting first trade resolution`;
+        }
     } else {
         document.getElementById('uptime-text').textContent = '';
+        document.getElementById('calib-text').textContent = '';
     }
     document.getElementById('s-open').textContent=Object.keys(positions).length;
     const wr=wins+losses>0?(wins/(wins+losses)*100).toFixed(0)+'%':'—';
