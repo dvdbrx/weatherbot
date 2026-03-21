@@ -48,6 +48,8 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
                     "losses": losses,
                     "total_trades": wins + losses,
                     "peak_balance": state.get("balance", 10000.0),
+                    "last_started": state.get("last_started"),
+                    "last_updated": state.get("last_updated"),
                     "positions": {},
                     "trades": []
                 }

@@ -93,6 +93,7 @@ body::after{content:'';position:fixed;inset:0;background-image:linear-gradient(r
   </div>
   <div class="header-right">
     <div class="live-pill"><div class="dot" id="status-dot"></div><span id="status-text">CONNECTING...</span></div>
+    <div class="ts" id="uptime-text" style="color:var(--green)"></div>
     <div class="ts" id="ts">—</div>
   </div>
 </div>
@@ -264,6 +265,20 @@ async function loadData(){
     pnlEl.textContent=(pnl>=0?'+':'')+' $'+Math.abs(pnl).toFixed(2);
     pnlEl.className='stat-val'+(pnl<0?' red':'');
     document.getElementById('s-pct').textContent=(pct>=0?'+':'')+pct.toFixed(1)+'% return';
+    
+    if(sim.last_started && sim.last_updated) {
+        const stDt = new Date(sim.last_started);
+        const upDt = new Date(sim.last_updated);
+        const nowDt = new Date();
+        const diffMs = nowDt - stDt;
+        const h = Math.floor(diffMs / 3600000);
+        const m = Math.floor((diffMs % 3600000) / 60000);
+        const scanDiffS = Math.floor((nowDt - upDt) / 1000);
+        const scanStr = scanDiffS < 60 ? `${scanDiffS}s ago` : `${Math.floor(scanDiffS/60)}m ago`;
+        document.getElementById('uptime-text').textContent = `Uptime: ${h}h ${m}m | Ping: ${scanStr}`;
+    } else {
+        document.getElementById('uptime-text').textContent = '';
+    }
     document.getElementById('s-open').textContent=Object.keys(positions).length;
     const wr=wins+losses>0?(wins/(wins+losses)*100).toFixed(0)+'%':'—';
     document.getElementById('s-wr').textContent=wr;
