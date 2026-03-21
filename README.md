@@ -90,11 +90,38 @@ Get a free Visual Crossing API key at visualcrossing.com — used to fetch actua
 
 ---
 
-## Usage
+## 🏗 Architecture & Monitoring
+
+This system is incredibly lightweight. It is designed to be run completely headless 24/7 on a **Raspberry Pi**, while you securely monitor its performance from your **Laptop** (or phone) anywhere in the world.
+
+### 1. The Core Engine (Raspberry Pi)
+The Pi runs the trading engine 24/7. It writes all live trading data and balances securely to a local `data/` folder. Using `rclone`, this folder is continuously synced to a private Google Drive folder (e.g., `WeatherBotData`).
+
+**To start the bot on the Pi:**
 ```bash
-python weatherbet.py           # start the bot — scans every hour
-python weatherbet.py status    # balance and open positions
-python weatherbet.py report    # full breakdown of all resolved markets
+ssh bob@<your-rpi-ip>
+cd weatherbot
+source .venv/bin/activate
+tmux new -s weatherbot
+python bot_v2.py
+```
+*(Press `Ctrl+B`, then `D` to safely detach your terminal and close your laptop. The bot runs forever).*
+
+### 2. The Command Center (Your Laptop)
+Your laptop does no trading. By mounting the same Google Drive folder via `rclone`, your local dashboard scripts instantly read the Pi's live pipeline.
+
+**To view the glowing Terminal Dashboard:**
+```bash
+# Ensure Google Drive is mounted on your laptop
+rclone mount gdrive: ~/google_drive --daemon
+cd weatherbot
+python tui.py
+```
+
+**To serve the Web Dashboard (Historical Charts):**
+```bash
+python serve_dashboard.py
+# Open http://localhost:8000 in your browser
 ```
 
 ---
