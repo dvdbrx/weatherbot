@@ -1,5 +1,5 @@
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from rich.live import Live
 from rich.table import Table
 from rich.layout import Layout
@@ -49,6 +49,31 @@ def generate_dashboard() -> Layout:
     else:
         overview_text.append("No trades yet", style="dim")
         
+    # Append Uptime and Last Check stats
+    uptime_str_display = ""
+    started_iso = state.get("last_started")
+    updated_iso = state.get("last_updated")
+    if started_iso and updated_iso:
+        try:
+            st_dt = datetime.fromisoformat(started_iso)
+            up_dt = datetime.fromisoformat(updated_iso)
+            now_dt = datetime.now(timezone.utc)
+            
+            uptime = now_dt - st_dt
+            h, rem = divmod(uptime.total_seconds(), 3600)
+            m, _ = divmod(rem, 60)
+            
+            diff = (now_dt - up_dt).total_seconds()
+            if diff < 60:
+                scan_str = f"{int(diff)}s ago"
+            else:
+                scan_str = f"{int(diff//60)}m ago"
+                
+            uptime_str_display = f" | Uptime: {int(h)}h {int(m)}m | Last Scan: {scan_str}"
+            overview_text.append(uptime_str_display, style="dim cyan")
+        except Exception:
+            pass
+            
     overview_panel = Panel(Align.center(overview_text), title="[bold]Overview[/bold]", border_style="blue")
     
     # Create Open Positions Table

@@ -914,6 +914,10 @@ def run_loop():
 
     last_full_scan = 0
 
+    state = load_state()
+    state["last_started"] = datetime.now(timezone.utc).isoformat()
+    save_state(state)
+
     while True:
         now_ts  = time.time()
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -950,6 +954,10 @@ def run_loop():
                     print(f"  balance: ${state['balance']:,.2f}")
             except Exception as e:
                 print(f"  Monitor error: {e}")
+
+        state = load_state()
+        state["last_updated"] = datetime.now(timezone.utc).isoformat()
+        save_state(state)
 
         try:
             time.sleep(MONITOR_INTERVAL)
