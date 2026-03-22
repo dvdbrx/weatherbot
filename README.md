@@ -97,15 +97,29 @@ This system is incredibly lightweight. It is designed to be run completely headl
 ### 1. The Core Engine (Raspberry Pi)
 The Pi runs the trading engine 24/7. It writes all live trading data and balances securely to a local `data/` folder. Using `rclone`, this folder is continuously synced to a private Google Drive folder (e.g., `WeatherBotData`).
 
-**To start the bot on the Pi:**
+**To start the bot on the Pi (Background Mode):**
 ```bash
 ssh bob@<your-rpi-ip>
+tmux new -s weatherbot
 cd weatherbot
 source .venv/bin/activate
-tmux new -s weatherbot
 python bot_v2.py
 ```
-*(Press `Ctrl+B`, then `D` to safely detach your terminal and close your laptop. The bot runs forever).*
+
+**How to safely leave the bot running:**
+Once the bot is running inside `tmux`, you can safely detach and close your laptop:
+1. Press and hold `Ctrl`
+2. Tap the `B` key, then release both keys
+3. Tap the `D` key
+*(You will see `[detached (from session weatherbot)]`. The bot is now running forever in the background).*
+
+**How to check on the bot later:**
+To see the live scrolling terminal again, just SSH back in and re-attach:
+```bash
+ssh bob@<your-rpi-ip>
+tmux attach
+```
+*(If it says `no sessions`, the bot was killed or the Pi restarted).*
 
 ### 2. The Command Center (Your Laptop)
 Your laptop does no trading. By mounting the same Google Drive folder via `rclone`, your local dashboard scripts instantly read the Pi's live pipeline.
