@@ -50,6 +50,16 @@ SIGMA_F = 2.0
 SIGMA_C = 1.2
 
 DATA_DIR         = Path("data")
+if not DATA_DIR.is_dir() and (DATA_DIR.is_symlink() or DATA_DIR.exists()):
+    # This happens if 'data' is a file or a broken symlink
+    if DATA_DIR.is_symlink():
+        target = os.readlink(DATA_DIR)
+        print(f"ERROR: 'data' is a broken symlink pointing to '{target}'.")
+        print("Please mount the drive or remove the symlink: rm data")
+    else:
+        print(f"ERROR: 'data' exists but is a file, not a directory.")
+    sys.exit(1)
+
 DATA_DIR.mkdir(exist_ok=True)
 STATE_FILE       = DATA_DIR / "state.json"
 MARKETS_DIR      = DATA_DIR / "markets"
@@ -353,14 +363,42 @@ def save_market(market):
     p = market_path(market["city"], market["date"])
     p.write_text(json.dumps(market, indent=2, ensure_ascii=False), encoding="utf-8")
 
+_MARKETS_CACHE = {}
+_LAST_DIR_MTIME = 0
+
 def load_all_markets():
-    markets = []
+    global _LAST_DIR_MTIME, _MARKETS_CACHE
+    try:
+        current_mtime = MARKETS_DIR.stat().st_mtime
+    except Exception:
+        current_mtime = 0
+    
+    # If directory hasn't changed, return cache
+    if current_mtime <= _LAST_DIR_MTIME and _MARKETS_CACHE:
+        return list(_MARKETS_CACHE.values())
+
+    # Update cache
+    new_cache = {}
     for f in MARKETS_DIR.glob("*.json"):
         try:
-            markets.append(json.loads(f.read_text(encoding="utf-8")))
+            fname = f.name
+            # If file is already in cache and not modified, reuse it
+            if fname in _MARKETS_CACHE:
+                fstat = f.stat()
+                if fstat.st_mtime <= _MARKETS_CACHE[fname].get("_cached_mtime", 0):
+                    new_cache[fname] = _MARKETS_CACHE[fname]
+                    continue
+            
+            data = json.loads(f.read_text(encoding="utf-8"))
+            data["_cached_mtime"] = f.stat().st_mtime
+            new_cache[fname] = data
         except Exception:
             pass
-    return markets
+    
+    _MARKETS_CACHE.clear()
+    _MARKETS_CACHE.update(new_cache)
+    _LAST_DIR_MTIME = current_mtime
+    return list(_MARKETS_CACHE.values())
 
 def new_market(city_slug, date_str, event, hours):
     loc = LOCATIONS[city_slug]

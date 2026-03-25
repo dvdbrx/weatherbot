@@ -7,6 +7,9 @@ from rich.layout import Layout
 from rich.panel import Panel
 from rich.align import Align
 from rich.text import Text
+from rich.console import Console
+
+console = Console()
 
 from bot_v2 import load_state, load_all_markets, CALIBRATION_FILE
 
@@ -19,10 +22,22 @@ def generate_dashboard() -> Layout:
     
     bal = state.get("balance", 0.0)
     start = state.get("starting_balance", 10000.0)
-    wins_count = state.get("wins", 0)
-    losses_count = state.get("losses", 0)
+    # Derive wins/losses dynamically from closed positions so
+    # the header always matches the closed-positions table.
+    wins_count = sum(1 for m in closed_pos if (m.get("position") or {}).get("pnl", 0) > 0)
+    losses_count = sum(1 for m in closed_pos if (m.get("position") or {}).get("pnl", 0) < 0)
     total = wins_count + losses_count
     ret_pct = (bal - start) / start * 100 if start else 0
+
+    # Avg win/loss as % of bet size (cost field, else fallback to entry*shares)
+    def _pct(pos):
+        cost = pos.get("cost") or (pos.get("entry_price", 0) * pos.get("shares", 0))
+        return (pos.get("pnl", 0) / cost * 100) if cost else 0.0
+
+    win_pcts  = [_pct(m["position"]) for m in closed_pos if m["position"].get("pnl", 0) > 0]
+    loss_pcts = [_pct(m["position"]) for m in closed_pos if m["position"].get("pnl", 0) < 0]
+    avg_win_pct  = sum(win_pcts)  / len(win_pcts)  if win_pcts  else None
+    avg_loss_pct = sum(loss_pcts) / len(loss_pcts) if loss_pcts else None
     
     # Calculate Unrealized PnL
     total_unrealized = 0.0
@@ -47,6 +62,12 @@ def generate_dashboard() -> Layout:
     overview_text.append(f" | Trades: {total} (W: {wins_count} / L: {losses_count}) | ", style="bold")
     if total > 0:
         overview_text.append(f"Win Rate: {wins_count/total:.0%}", style="bold magenta")
+        if avg_win_pct is not None:
+            overview_text.append(f" | Avg Win: ", style="bold")
+            overview_text.append(f"+{avg_win_pct:.0f}%", style="green")
+        if avg_loss_pct is not None:
+            overview_text.append(f" Avg Loss: ", style="bold")
+            overview_text.append(f"{avg_loss_pct:.0f}%", style="red")
     else:
         overview_text.append("No trades yet", style="dim")
         
@@ -179,10 +200,18 @@ def generate_dashboard() -> Layout:
 
 if __name__ == "__main__":
     try:
-        with Live(generate_dashboard(), refresh_per_second=2) as live:
+        # Initial load with feedback BEFORE starting Live
+        with console.status("[bold green]Loading market data from Google Drive... (This may take ~60s on first run)"):
+            initial_data = generate_dashboard()
+            
+        with Live(initial_data, refresh_per_second=2) as live:
             while True:
-                time.sleep(2)
-                live.update(generate_dashboard())
+                time.sleep(5)  # Increase sleep to 5s for remote mounts
+                try:
+                    live.update(generate_dashboard())
+                except Exception as e:
+                    # Don't crash on transient I/O errors
+                    pass
     except KeyboardInterrupt:
         pass
     except Exception as e:
