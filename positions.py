@@ -1,0 +1,178 @@
+"""
+positions.py — Position lifecycle management.
+Handles stop-loss, trailing stops, forecast-shift closes, and signal evaluation.
+Consolidates the previously duplicated position management logic.
+"""
+
+from datetime import datetime, timezone
+
+from config import (
+    LOCATIONS, MIN_EV, MAX_PRICE, MIN_VOLUME,
+    MAX_SLIPPAGE, SANDBAG_SLIPPAGE, MIN_HOURS,
+    STOP_LOSS_PCT, TRAILING_ACTIVATION_PCT,
+    MIN_BET_SIZE, MAX_SANDBAGGED_PRICE,
+    LIVE_TRADING,
+)
+from math_utils import bucket_prob, calc_ev, calc_kelly, bet_size, in_bucket
+from polymarket_api import get_current_price
+from storage import load_all_markets, get_sigma
+
+
+def check_stop_loss(
+    pos: dict,
+    current_price: float,
+    entry: float,
+) -> dict | None:
+    """Evaluate stop-loss and trailing stop conditions.
+
+    Returns a dict with close details if triggered, or None if no action.
+    This is the single source of truth for stop logic (was duplicated in
+    scan_and_update and monitor_positions).
+    """
+    stop = pos.get("stop_price", entry * STOP_LOSS_PCT)
+
+    # Trailing: if up enough, move stop to breakeven
+    trailing_activated = False
+    if current_price >= entry * TRAILING_ACTIVATION_PCT and stop < entry:
+        stop = entry
+        trailing_activated = True
+
+    # Check stop
+    if current_price <= stop:
+        pnl = round((current_price - entry) * pos["shares"], 2)
+        reason = "stop_loss" if current_price < entry else "trailing_stop"
+        label = "STOP" if current_price < entry else "TRAILING BE"
+        return {
+            "pnl": pnl,
+            "exit_price": current_price,
+            "close_reason": reason,
+            "label": label,
+            "stop_price": stop,
+            "trailing_activated": trailing_activated,
+        }
+
+    # No close, but maybe update trailing
+    if trailing_activated:
+        return {
+            "trailing_only": True,
+            "stop_price": stop,
+            "trailing_activated": True,
+        }
+
+    return None
+
+
+def check_forecast_shift(
+    pos: dict,
+    forecast_temp: float,
+    loc: dict,
+) -> bool:
+    """Check if the forecast has shifted far enough to warrant closing.
+
+    Returns True if position should be closed due to forecast change.
+    """
+    old_bucket_low = pos["bucket_low"]
+    old_bucket_high = pos["bucket_high"]
+    unit = loc["unit"]
+    buffer = 2.0 if unit == "F" else 1.0
+
+    mid_bucket = (
+        (old_bucket_low + old_bucket_high) / 2
+        if old_bucket_low != -999 and old_bucket_high != 999
+        else forecast_temp
+    )
+    forecast_far = abs(forecast_temp - mid_bucket) > (abs(mid_bucket - old_bucket_low) + buffer)
+
+    return not in_bucket(forecast_temp, old_bucket_low, old_bucket_high) and forecast_far
+
+
+def evaluate_signal(
+    outcomes: list[dict],
+    forecast_temp: float,
+    best_source: str | None,
+    city_slug: str,
+    cal: dict,
+    balance: float,
+    snap_ts: str | None,
+    live_client=None,
+) -> dict | None:
+    """Evaluate all outcomes for a market and return the best trade signal.
+
+    Returns a position dict if a valid signal is found, else None.
+    """
+    sigma = get_sigma(cal, city_slug, best_source or "ecmwf")
+
+    for o in outcomes:
+        t_low, t_high = o["range"]
+        price = o["price"]
+        volume = o["volume"]
+
+        if not in_bucket(forecast_temp, t_low, t_high):
+            continue
+
+        bid = o.get("bid", o["price"])
+        ask = o.get("ask", o["price"])
+        spread = o.get("spread", 0)
+
+        # Slippage filter
+        if spread > MAX_SLIPPAGE:
+            continue
+        if ask >= MAX_PRICE or volume < MIN_VOLUME:
+            continue
+
+        # Sandbagging: worsen the ask price to be conservative
+        sandbagged_ask = min(ask + SANDBAG_SLIPPAGE + (spread * 0.5), MAX_SANDBAGGED_PRICE)
+
+        p = bucket_prob(forecast_temp, t_low, t_high, sigma)
+        ev = calc_ev(p, sandbagged_ask)
+        if ev < MIN_EV:
+            continue
+
+        kelly = calc_kelly(p, sandbagged_ask)
+        size = bet_size(kelly, balance)
+
+        # Live trading sizing rules
+        if LIVE_TRADING:
+            active_count = len([
+                m for m in load_all_markets()
+                if m.get("position") and m["position"].get("status") == "open"
+            ])
+            if balance < 100:
+                if active_count >= 1:
+                    continue
+                size = min(balance * 0.9, 10.0)
+            else:
+                if active_count >= 10:
+                    continue
+                size = 10.0
+
+        if size < MIN_BET_SIZE:
+            continue
+
+        return {
+            "market_id":     o["market_id"],
+            "token_id":      o.get("token_id"),
+            "question":      o["question"],
+            "bucket_low":    t_low,
+            "bucket_high":   t_high,
+            "entry_price":   round(sandbagged_ask, 4),
+            "bid_at_entry":  bid,
+            "spread":        spread,
+            "shares":        round(size / sandbagged_ask, 2),
+            "cost":          size,
+            "p":             round(p, 4),
+            "ev":            round(ev, 4),
+            "kelly":         round(kelly, 4),
+            "forecast_temp": forecast_temp,
+            "forecast_src":  best_source,
+            "sigma":         sigma,
+            "opened_at":     snap_ts,
+            "status":        "open",
+            "pnl":           None,
+            "exit_price":    None,
+            "close_reason":  None,
+            "closed_at":     None,
+            "live_order_id": None,
+        }
+
+    return None

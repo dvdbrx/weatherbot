@@ -11,5 +11,6 @@
   "calibration_min": 30,
   "max_slippage": 0.05,
   "sandbag_slippage": 0.03,
-  "daily_spend_limit": 5.0
+  "daily_spend_limit": 5.0,
+  "live_trading_enabled": true
 }

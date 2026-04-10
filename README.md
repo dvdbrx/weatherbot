@@ -6,23 +6,29 @@ No SDK. No black box. Pure Python.
 
 ---
 
-## Versions
+## Project Structure
 
-### `bot_v1.py` — Base Bot
-The foundation. Scans 6 US cities, fetches forecasts from NWS using airport station coordinates, finds matching temperature buckets on Polymarket, and enters trades when the market price is below the entry threshold.
-
-No math, no complexity. Just the core logic — good for understanding how the system works.
-
-### `weatherbet.py` — Full Bot (current)
-Everything in v1, plus:
-- **20 cities** across 4 continents (US, Europe, Asia, South America, Oceania)
-- **3 forecast sources** — ECMWF (global), HRRR/GFS (US, hourly), METAR (real-time observations)
-- **Expected Value** — skips trades where the math doesn't work
-- **Kelly Criterion** — sizes positions based on edge strength
-- **Stop-loss + trailing stop** — 20% stop, moves to breakeven at +20%
-- **Slippage filter** — skips markets with spread > $0.03
-- **Self-calibration** — learns forecast accuracy per city over time
-- **Full data storage** — every forecast snapshot, trade, and resolution saved to JSON
+```
+weatherbot/
+├── bot_v2.py              # Main orchestrator — scan loop, trade execution
+├── config.py              # All configuration, constants, locations
+├── math_utils.py          # Pure math: Kelly, EV, bucket probability
+├── http_utils.py          # HTTP client with retry + exponential backoff
+├── forecasts.py           # Weather APIs: ECMWF, HRRR, METAR, Visual Crossing
+├── polymarket_api.py      # Polymarket Gamma API: events, prices, resolution
+├── storage.py             # Market/state/calibration persistence
+├── positions.py           # Position lifecycle: stops, signals, forecast shifts
+├── polymarket_client.py   # Live trading client (py-clob-client wrapper)
+├── tui.py                 # Rich terminal dashboard
+├── serve_dashboard.py     # HTTP server for web dashboard
+├── sim_dashboard_repost.html  # Web dashboard UI
+├── config.json            # Runtime parameters
+├── requirements.txt       # Python dependencies
+├── test_trade.py          # Manual $1 test trade script
+├── test_balance.py        # Wallet balance checker
+├── wallettest.py          # Client connection test
+└── legacy/                # Archived: bot_v1.py, patch.py
+```
 
 ---
 
@@ -38,6 +44,18 @@ The bot:
 5. Sizes the position using fractional Kelly Criterion
 6. Monitors stops every 10 minutes, full scan every hour
 7. Auto-resolves markets by querying Polymarket API directly
+
+### Key Features
+
+- **20 cities** across 4 continents (US, Europe, Asia, South America, Oceania)
+- **3 forecast sources** — ECMWF (global), HRRR/GFS (US, hourly), METAR (real-time observations)
+- **Expected Value** — skips trades where the math doesn't work
+- **Kelly Criterion** — sizes positions based on edge strength
+- **Stop-loss + trailing stop** — configurable stop, moves to breakeven after gain threshold
+- **Slippage filter** — skips markets with wide spreads
+- **Self-calibration** — learns forecast accuracy per city over time
+- **Retry logic** — HTTP requests use exponential backoff
+- **Full data storage** — every forecast snapshot, trade, and resolution saved to JSON
 
 ---
 
@@ -65,24 +83,26 @@ Every Polymarket weather market resolves on a specific airport station. NYC reso
 ```bash
 git clone https://github.com/alteregoeth-ai/weatherbot
 cd weatherbot
-pip install requests
+pip install -r requirements.txt
 ```
 
-Create `config.json` in the project folder:
+Create a `.env` file:
+```
+VISUAL_CROSSING_KEY=your_key_here
+# For live trading:
+# POLYMARKET_PRIVATE_KEY=0x...
+```
+
+Configure trading parameters in `config.json`:
 ```json
 {
   "balance": 10000.0,
-  "max_bet": 20.0,
-  "min_ev": 0.05,
-  "max_price": 0.45,
-  "min_volume": 2000,
-  "min_hours": 2.0,
-  "max_hours": 72.0,
-  "kelly_fraction": 0.25,
-  "max_slippage": 0.03,
-  "scan_interval": 3600,
-  "calibration_min": 30,
-  "vc_key": "YOUR_VISUAL_CROSSING_KEY"
+  "max_bet": 5.0,
+  "min_ev": 0.15,
+  "max_price": 0.50,
+  "min_volume": 1000,
+  "kelly_fraction": 0.15,
+  "live_trading_enabled": false
 }
 ```
 
@@ -119,14 +139,12 @@ To see the live scrolling terminal again, just SSH back in and re-attach:
 ssh bob@<your-rpi-ip>
 tmux attach
 ```
-*(If it says `no sessions`, the bot was killed or the Pi restarted).*
 
 ### 2. The Command Center (Your Laptop)
 Your laptop does no trading. By mounting the same Google Drive folder via `rclone`, your local dashboard scripts instantly read the Pi's live pipeline.
 
 **To view the glowing Terminal Dashboard:**
 ```bash
-# Ensure Google Drive is mounted on your laptop
 rclone mount gdrive: ~/google_drive --daemon
 cd weatherbot
 python tui.py
