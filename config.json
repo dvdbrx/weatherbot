@@ -1,6 +1,6 @@
 {
   "balance": 10000.0,
-  "max_bet": 10.0,
+  "max_bet": 5.0,
   "min_ev": 0.15,
   "max_price": 0.50,
   "min_volume": 1000,
@@ -10,5 +10,6 @@
   "scan_interval": 3600,
   "calibration_min": 30,
   "max_slippage": 0.05,
-  "sandbag_slippage": 0.03
+  "sandbag_slippage": 0.03,
+  "daily_spend_limit": 5.0
 }
