@@ -13,6 +13,7 @@ Usage:
 """
 
 import sys
+import os
 import time
 import requests
 from datetime import datetime, timezone, timedelta
@@ -45,10 +46,16 @@ validate_data_dir()
 
 live_client = None
 if LIVE_TRADING:
+    # Pre-flight: warn about proxy for geo-restricted regions
+    if not os.environ.get("HTTPS_PROXY") and not os.environ.get("HTTP_PROXY"):
+        print("⚠️  LIVE_TRADING enabled but no HTTPS_PROXY set.")
+        print("   Order placement will fail from US IPs (403 geoblock).")
+        print("   Fix: ssh -D 1080 user@non-us-server, then set HTTPS_PROXY in .env")
+        print()
     try:
         from polymarket_client import PolymarketLiveClient
         live_client = PolymarketLiveClient()
-        print("Live Trading ENABLED. Connected to Polymarket.")
+        print(f"Live Trading ENABLED. Address: {live_client.trading_address}")
     except Exception as e:
         print(f"Failed to initialize Polymarket Live Client: {e}")
         sys.exit(1)

@@ -4,12 +4,23 @@ Wraps py-clob-client for order execution, balance checks, and order management.
 """
 
 import os
+import logging
 import requests
 from datetime import datetime, timezone
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import ApiCreds, OrderArgs, OrderType, BalanceAllowanceParams, AssetType
+from py_clob_client.exceptions import PolyApiException
 
 from config import POLYGON_RPC_URL, USDC_E_CONTRACT
+
+log = logging.getLogger(__name__)
+
+GEOBLOCK_MSG = (
+    "Polymarket 403: Trading restricted in your region.\n"
+    "  Fix: Start a SOCKS5 proxy and set HTTPS_PROXY in .env:\n"
+    "    ssh -D 1080 -q -C -N user@your-non-us-server\n"
+    "    HTTPS_PROXY=socks5h://127.0.0.1:1080"
+)
 
 
 class PolymarketLiveClient:
@@ -17,6 +28,14 @@ class PolymarketLiveClient:
         self.private_key = private_key or os.getenv("POLYMARKET_PRIVATE_KEY")
         if not self.private_key:
             raise ValueError("Private key missing for Polymarket live client")
+
+        # Check proxy configuration
+        self.proxy_configured = bool(os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY"))
+        if not self.proxy_configured:
+            log.warning("⚠️  No HTTPS_PROXY set — live order placement may be geo-blocked (403).")
+            log.warning("   See .env for proxy setup instructions.")
+        else:
+            log.info(f"✅ Proxy configured: {os.environ.get('HTTPS_PROXY', 'via HTTP_PROXY')}")
 
         self.client = ClobClient(host, key=self.private_key, chain_id=chain_id)
 
@@ -85,8 +104,14 @@ class PolymarketLiveClient:
             order = self.client.create_order(order_args)
             resp = self.client.post_order(order, OrderType.GTC)
             return resp
+        except PolyApiException as e:
+            if e.status_code == 403:
+                log.error(GEOBLOCK_MSG)
+            else:
+                log.error(f"CLOB API error placing {side} order: {e}")
+            return None
         except Exception as e:
-            print(f"Error placing {side} order: {e}")
+            log.error(f"Error placing {side} order: {e}")
             return None
 
     def cancel_order(self, order_id: str) -> bool:
