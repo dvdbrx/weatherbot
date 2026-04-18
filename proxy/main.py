@@ -1,5 +1,5 @@
 """Lightweight reverse proxy for Polymarket CLOB API.
-Deployed on Fly.io (Europe) to bypass US geo-restrictions.
+Deployed on Render (Europe) to bypass US geo-restrictions.
 """
 
 import os
@@ -51,5 +51,5 @@ def proxy(path):
 
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 8080))
+    port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)

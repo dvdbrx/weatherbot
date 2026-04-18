@@ -3,10 +3,12 @@
 vpn_test_trade.py — Run with VPN active, check log after.
 
 Usage:
-    1. Connect Surfshark to a European server
-    2. Run:  nohup python vpn_test_trade.py > trade_test.log 2>&1 &
-    3. Disconnect Surfshark
-    4. Check results:  cat trade_test.log
+    1. Open a terminal / IDE and run: python vpn_test_trade.py
+    2. The script will say "Waiting for VPN..."
+    3. Connect Surfshark to a European server. Your IDE will disconnect.
+    4. Wait ~15 seconds. The script will automatically detect the IP change and run the trade!
+    5. Disconnect Surfshark.
+    6. Reconnect to your IDE and check carefully the generated 'vpn_trade.log'
 """
 
 import os
@@ -15,7 +17,7 @@ import json
 import time
 import requests
 
-# Force load .env manually (dotenv can fail in nohup context)
+# Force load .env manually (dotenv can fail if paths are weird)
 env_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
 if os.path.exists(env_file):
     with open(env_file) as f:
@@ -30,26 +32,50 @@ from py_clob_client.clob_types import ApiCreds, OrderArgs, OrderType
 from py_clob_client.order_builder.constants import BUY
 
 LOG = []
-def log(msg):
-    print(msg, flush=True)
+def log(msg, also_print=True):
+    if also_print:
+        print(msg, flush=True)
     LOG.append(msg)
+    with open('vpn_trade.log', 'w') as f:
+        f.write("\n".join(LOG))
 
+def get_ip_info():
+    try:
+        data = requests.get('http://ip-api.com/json', timeout=5).json()
+        return data.get('query', '0.0.0.0'), data.get('countryCode', 'US')
+    except:
+        return None, None
+
+def wait_for_vpn():
+    log("⏳ Checking current IP...")
+    orig_ip, orig_country = get_ip_info()
+    log(f"   Current IP: {orig_ip} ({orig_country})")
+    
+    log("\n🛑 Please turn ON your Surfshark VPN (connect to Europe).")
+    log("   Your IDE will disconnect, but this script will keep running!")
+    log("   Waiting for IP to change from US... (Press Ctrl+C to abort)")
+    
+    while True:
+        try:
+            ip, country = get_ip_info()
+            if ip and country:
+                if country != 'US' and ip != orig_ip:
+                    log(f"\n🎉 VPN DETECTED! New IP: {ip} ({country})")
+                    break
+        except:
+            pass
+        time.sleep(2)
 
 def main():
     pk = os.getenv('POLYMARKET_PRIVATE_KEY')
     if not pk:
         log("❌ POLYMARKET_PRIVATE_KEY not set")
         return False
-
-    # Check IP
-    try:
-        ip = requests.get('https://ifconfig.me/ip', timeout=5).text.strip()
-        log(f"🌍 IP: {ip}")
-    except:
-        log("⚠️ Could not check IP")
+        
+    wait_for_vpn()
 
     # Init client
-    log("🔑 Connecting to CLOB...")
+    log("\n🔑 Connecting to CLOB...")
     client = ClobClient('https://clob.polymarket.com', key=pk, chain_id=137)
     creds = client.create_or_derive_api_creds()
     if isinstance(creds, dict):
@@ -96,9 +122,13 @@ def main():
     test_size = 5.0
     log(f"📝 Placing resting BUY @ {test_price} x {test_size} (${test_price * test_size:.2f})")
 
-    order_args = OrderArgs(price=test_price, size=test_size, side=BUY, token_id=target['tid'])
-    signed_order = client.create_order(order_args)
-    log("   ✅ Order signed")
+    try:
+        order_args = OrderArgs(price=test_price, size=test_size, side=BUY, token_id=target['tid'])
+        signed_order = client.create_order(order_args)
+        log("   ✅ Order signed")
+    except Exception as e:
+        log(f"   ❌ Error signing order: {e}")
+        return False
 
     try:
         resp = client.post_order(signed_order, OrderType.GTC)
@@ -106,10 +136,10 @@ def main():
     except Exception as e:
         if "403" in str(e) or "restricted" in str(e).lower():
             log(f"   ❌ STILL GEO-BLOCKED: {e}")
-            log(f"   Your VPN may not be connected, or it's using a US exit.")
+            log(f"   Your VPN may be leaking or using a blocked IP.")
             return False
         else:
-            log(f"   ❌ Error: {e}")
+            log(f"   ❌ Error posting: {e}")
             return False
 
     # Extract order ID and cancel
@@ -128,19 +158,18 @@ def main():
         except Exception as e:
             log(f"   ⚠️ Cancel error (order may have expired): {e}")
 
-        log("")
-        log("=" * 55)
+        log("\n=======================================================")
         log("🎉 LIVE TRADE TEST COMPLETE!")
         log("   ✅ VPN bypass works")
         log("   ✅ Order placement works")
         log("   ✅ Order cancellation works")
         log("   ✅ Bot is READY for live trading!")
-        log("=" * 55)
+        log("=======================================================")
+        log("\n👉 You can now turn OFF your VPN and reconnect!")
         return True
     else:
         log(f"   ⚠️ Order posted but no ID returned: {resp}")
-        return True  # Still a success — order went through
-
+        return True
 
 if __name__ == '__main__':
     try:
@@ -149,5 +178,5 @@ if __name__ == '__main__':
     except Exception as e:
         log(f"💥 Unexpected error: {e}")
         import traceback
-        traceback.print_exc()
+        log(traceback.format_exc(), also_print=False)
         sys.exit(1)

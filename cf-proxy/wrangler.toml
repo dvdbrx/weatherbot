@@ -1,0 +1,11 @@
+name = "polymarket-clob-proxy"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+[[durable_objects.bindings]]
+name = "PROXY"
+class_name = "ProxyDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ProxyDO"]

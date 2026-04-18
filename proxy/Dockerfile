@@ -5,4 +5,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py .
 
-CMD exec gunicorn --bind :$PORT --workers 1 --threads 2 main:app
+# Tell Render to use port 10000
+EXPOSE 10000
+ENV PORT=10000
+
+# Start gunicorn directly, binding to 0.0.0.0:10000
+CMD ["gunicorn", "--bind", "0.0.0.0:10000", "--workers", "1", "--threads", "2", "--timeout", "120", "--access-logfile", "-", "--error-logfile", "-", "main:app"]
