@@ -48,19 +48,33 @@ validate_data_dir()
 
 live_client = None
 if LIVE_TRADING:
-    # Pre-flight: warn about proxy for geo-restricted regions
-    if not os.environ.get("HTTPS_PROXY") and not os.environ.get("HTTP_PROXY"):
+    # Warn about proxy only if not on a system-level VPN
+    if (not os.environ.get("HTTPS_PROXY") and not os.environ.get("HTTP_PROXY")
+            and not os.environ.get("SKIP_PROXY_WARN")):
         print("⚠️  LIVE_TRADING enabled but no HTTPS_PROXY set.")
         print("   Order placement will fail from US IPs (403 geoblock).")
         print("   Fix: ssh -D 1080 user@non-us-server, then set HTTPS_PROXY in .env")
+        print("   (Or set SKIP_PROXY_WARN=1 in .env if using a system-level VPN)")
         print()
     try:
         from polymarket_client import PolymarketLiveClient
         live_client = PolymarketLiveClient()
         print(f"Live Trading ENABLED. Address: {live_client.trading_address}")
+
+        # Seed state with real wallet balance on first run
+        _init_state = load_state()
+        if _init_state.get("starting_balance", 0) == 10000.0 or _init_state["balance"] == 10000.0:
+            _real_bal = live_client.get_usdc_balance()
+            if _real_bal > 0:
+                _init_state["balance"]         = _real_bal
+                _init_state["starting_balance"] = _real_bal
+                _init_state["peak_balance"]     = _real_bal
+                save_state(_init_state)
+                print(f"  Seeded balance from wallet: ${_real_bal:.2f}")
     except Exception as e:
         print(f"Failed to initialize Polymarket Live Client: {e}")
         sys.exit(1)
+
 
 # Module-level calibration cache
 _cal: dict = {}
@@ -393,7 +407,6 @@ def print_status() -> None:
 
     bal = state["balance"]
     start = state["starting_balance"]
-    ret_pct = (bal - start) / start * 100
     wins = state["wins"]
     losses = state["losses"]
     total = wins + losses
@@ -401,10 +414,25 @@ def print_status() -> None:
     print(f"\n{'='*55}")
     print(f"  WEATHERBET — STATUS")
     print(f"{'='*55}")
-    print(f"  Balance:     ${bal:,.2f}  (start ${start:,.2f}, {'+'if ret_pct>=0 else ''}{ret_pct:.1f}%)")
+
+    # Live wallet balance (fetched fresh from chain/CLOB)
+    if LIVE_TRADING and live_client:
+        try:
+            wallet_bal = live_client.get_usdc_balance()
+            print(f"  Wallet USDC: ${wallet_bal:,.2f}  (address: {live_client.trading_address[:10]}...)")
+            # Sync into state so scans start with the right value
+            state["balance"] = wallet_bal
+            save_state(state)
+            bal = wallet_bal
+        except Exception as e:
+            print(f"  Wallet USDC: ⚠️  could not fetch ({e})")
+
+    ret_pct = (bal - start) / start * 100 if start else 0
+    print(f"  Bot balance: ${bal:,.2f}  (start ${start:,.2f}, {'+'if ret_pct>=0 else ''}{ret_pct:.1f}%)")
     print(f"  Trades:      {total} | W: {wins} | L: {losses} | WR: {wins/total:.0%}" if total else "  No trades yet")
     print(f"  Open:        {len(open_pos)}")
     print(f"  Resolved:    {len(resolved)}")
+
 
     # Risk guard summary
     peak = state.get("peak_balance", bal)
