@@ -11,7 +11,7 @@ from config import (
     MAX_SLIPPAGE, SANDBAG_SLIPPAGE, MIN_HOURS,
     STOP_LOSS_PCT, TRAILING_ACTIVATION_PCT,
     MIN_BET_SIZE, MAX_SANDBAGGED_PRICE,
-    LIVE_TRADING,
+    LIVE_TRADING, DAILY_SPEND_LIMIT,
 )
 from math_utils import bucket_prob, calc_ev, calc_kelly, bet_size, in_bucket
 from polymarket_api import get_current_price
@@ -95,10 +95,12 @@ def evaluate_signal(
     balance: float,
     snap_ts: str | None,
     live_client=None,
+    today_spent: float = 0.0,
 ) -> dict | None:
     """Evaluate all outcomes for a market and return the best trade signal.
 
     Returns a position dict if a valid signal is found, else None.
+    Returns None immediately if any risk guard (daily spend, etc.) would be breached.
     """
     sigma = get_sigma(cal, city_slug, best_source or "ecmwf")
 
@@ -145,6 +147,12 @@ def evaluate_signal(
                 if active_count >= 10:
                     continue
                 size = 10.0
+
+            # Enforce daily spend limit: cap size so we don't overshoot
+            budget_left = DAILY_SPEND_LIMIT - today_spent
+            if budget_left <= 0:
+                return None  # daily budget exhausted
+            size = min(size, budget_left)
 
         if size < MIN_BET_SIZE:
             continue

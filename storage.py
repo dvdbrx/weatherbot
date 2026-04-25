@@ -11,6 +11,7 @@ from config import (
     DATA_DIR, STATE_FILE, MARKETS_DIR, CALIBRATION_FILE,
     BALANCE, LOCATIONS, CALIBRATION_MIN,
     SIGMA_F, SIGMA_C,
+    DAILY_SPEND_LIMIT, MAX_DRAWDOWN_PCT, MAX_DAILY_LOSSES,
 )
 
 # Maximum number of forecast/market snapshots to keep per market file
@@ -115,7 +116,67 @@ def load_state() -> dict:
         "wins":             0,
         "losses":           0,
         "peak_balance":     BALANCE,
+        "today_date":       "",
+        "today_spent":      0.0,
+        "today_losses":     0,
+        "halted":           False,
+        "halt_reason":      None,
     }
+
+
+def _today_utc() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def reset_daily_if_new_day(state: dict) -> dict:
+    """Reset daily counters if UTC date has changed. Returns updated state."""
+    today = _today_utc()
+    if state.get("today_date") != today:
+        state["today_date"]   = today
+        state["today_spent"]  = 0.0
+        state["today_losses"] = 0
+        # Only clear a daily-limit halt (not a drawdown halt)
+        if state.get("halt_reason") in ("daily_spend", "daily_losses"):
+            state["halted"]      = False
+            state["halt_reason"] = None
+    return state
+
+
+def check_risk_guards(state: dict) -> tuple[bool, str | None]:
+    """Evaluate all risk guards and return (halted, reason).
+
+    Guards checked (in priority order):
+      1. Manual halt flag already set
+      2. Max drawdown kill switch  (permanent until manual reset)
+      3. Daily spend limit         (resets next UTC day)
+      4. Daily loss circuit breaker(resets next UTC day)
+    """
+    if state.get("halted"):
+        return True, state.get("halt_reason", "manual_halt")
+
+    balance      = state["balance"]
+    peak_balance = state.get("peak_balance", balance)
+
+    # Guard 1 — max drawdown kill switch
+    if peak_balance > 0 and (peak_balance - balance) / peak_balance >= MAX_DRAWDOWN_PCT:
+        state["halted"]      = True
+        state["halt_reason"] = "max_drawdown"
+        return True, "max_drawdown"
+
+    # Guard 2 — daily spend limit
+    if state.get("today_spent", 0.0) >= DAILY_SPEND_LIMIT:
+        state["halted"]      = True
+        state["halt_reason"] = "daily_spend"
+        return True, "daily_spend"
+
+    # Guard 3 — daily loss circuit breaker
+    if state.get("today_losses", 0) >= MAX_DAILY_LOSSES:
+        state["halted"]      = True
+        state["halt_reason"] = "daily_losses"
+        return True, "daily_losses"
+
+    return False, None
+
 
 
 def save_state(state: dict) -> None:

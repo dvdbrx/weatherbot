@@ -23,6 +23,7 @@ from config import (
     LIVE_TRADING, SCAN_INTERVAL, MONITOR_INTERVAL,
     MAX_BET, MIN_HOURS, MAX_HOURS, CALIBRATION_MIN,
     STOP_LOSS_PCT, TRAILING_ACTIVATION_PCT,
+    DAILY_SPEND_LIMIT, MAX_DRAWDOWN_PCT, MAX_DAILY_LOSSES,
     validate_data_dir, DATA_DIR, CALIBRATION_FILE,
 )
 from math_utils import in_bucket
@@ -35,6 +36,7 @@ from storage import (
     load_state, save_state,
     load_market, save_market, load_all_markets,
     new_market, load_cal, run_calibration, get_sigma,
+    reset_daily_if_new_day, check_risk_guards,
 )
 from positions import check_stop_loss, check_forecast_shift, evaluate_signal
 
@@ -98,6 +100,21 @@ def scan_and_update() -> tuple[int, int, int]:
     global _cal
     now = datetime.now(timezone.utc)
     state = load_state()
+
+    # Roll over daily counters if UTC date changed
+    state = reset_daily_if_new_day(state)
+
+    # Check risk guards before doing anything
+    halted, halt_reason = check_risk_guards(state)
+    if halted:
+        save_state(state)
+        _HALT_REASONS = {
+            "max_drawdown": f"⛔ MAX DRAWDOWN exceeded ({MAX_DRAWDOWN_PCT:.0%} from peak) — bot HALTED.",
+            "daily_spend":  f"🛑 Daily spend limit ${DAILY_SPEND_LIMIT:.2f} reached — no new trades today.",
+            "daily_losses": f"🛑 Daily loss limit ({MAX_DAILY_LOSSES} losses) reached — no new trades today.",
+        }
+        print(_HALT_REASONS.get(halt_reason, f"⛔ Trading halted: {halt_reason}"))
+        return 0, 0, 0
 
     if LIVE_TRADING and live_client:
         live_balance = live_client.get_usdc_balance()
@@ -215,6 +232,7 @@ def scan_and_update() -> tuple[int, int, int]:
                 signal = evaluate_signal(
                     outcomes, forecast_temp, best_source,
                     city_slug, _cal, balance, snap.get("ts"), live_client,
+                    today_spent=state.get("today_spent", 0.0),
                 )
                 if signal:
                     if LIVE_TRADING and live_client:
@@ -230,17 +248,22 @@ def scan_and_update() -> tuple[int, int, int]:
                                 print(f"  [LIVE] Order {signal['live_order_id']} placed successfully.")
                             else:
                                 print(f"  [LIVE] Order failed: {resp}")
+                                signal = None  # don't record as open if order failed
                         else:
                             print(f"  [LIVE] Skipping: No token_id for market {signal['market_id']}")
+                            signal = None
 
-                    balance -= signal["cost"]
-                    mkt["position"] = signal
-                    state["total_trades"] += 1
-                    new_pos += 1
-                    bucket_label = f"{signal['bucket_low']}-{signal['bucket_high']}{unit_sym}"
-                    print(f"  [BUY]  {loc['name']} {horizon} {date} | {bucket_label} | "
-                          f"${signal['entry_price']:.3f} | EV {signal['ev']:+.2f} | "
-                          f"${signal['cost']:.2f} ({signal['forecast_src'].upper()})")
+                    if signal:
+                        balance -= signal["cost"]
+                        state["today_spent"] = round(state.get("today_spent", 0.0) + signal["cost"], 4)
+                        mkt["position"] = signal
+                        state["total_trades"] += 1
+                        new_pos += 1
+                        bucket_label = f"{signal['bucket_low']}-{signal['bucket_high']}{unit_sym}"
+                        print(f"  [BUY]  {loc['name']} {horizon} {date} | {bucket_label} | "
+                              f"${signal['entry_price']:.3f} | EV {signal['ev']:+.2f} | "
+                              f"${signal['cost']:.2f} ({signal['forecast_src'].upper()}) "
+                              f"[spent today: ${state['today_spent']:.2f}/{DAILY_SPEND_LIMIT:.2f}]")
 
             # Market closed by time
             if hours < 0.5 and mkt["status"] == "open":
@@ -285,6 +308,7 @@ def scan_and_update() -> tuple[int, int, int]:
             state["wins"] += 1
         else:
             state["losses"] += 1
+            state["today_losses"] = state.get("today_losses", 0) + 1
 
         result = "WIN" if won else "LOSS"
         print(f"  [{result}] {mkt['city_name']} {mkt['date']} | "
@@ -381,6 +405,23 @@ def print_status() -> None:
     print(f"  Trades:      {total} | W: {wins} | L: {losses} | WR: {wins/total:.0%}" if total else "  No trades yet")
     print(f"  Open:        {len(open_pos)}")
     print(f"  Resolved:    {len(resolved)}")
+
+    # Risk guard summary
+    peak = state.get("peak_balance", bal)
+    drawdown = (peak - bal) / peak * 100 if peak > 0 else 0
+    today_spent  = state.get("today_spent", 0.0)
+    today_losses = state.get("today_losses", 0)
+    halted       = state.get("halted", False)
+    halt_reason  = state.get("halt_reason")
+    print(f"\n  Risk Guards:")
+    print(f"    Daily spend:  ${today_spent:.2f} / ${DAILY_SPEND_LIMIT:.2f}")
+    print(f"    Daily losses: {today_losses} / {MAX_DAILY_LOSSES}")
+    print(f"    Peak drawdown:{drawdown:.1f}% (limit {MAX_DRAWDOWN_PCT*100:.0f}%)")
+    if halted:
+        print(f"    ⛔ HALTED — reason: {halt_reason}")
+    else:
+        print(f"    ✅ Trading active")
+
 
     if open_pos:
         print(f"\n  Open positions:")

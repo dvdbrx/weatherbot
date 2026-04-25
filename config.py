@@ -41,8 +41,10 @@ MONITOR_INTERVAL: int    = 600  # monitor positions every 10 minutes
 # LIVE TRADING
 # =============================================================================
 
-LIVE_TRADING: bool       = _cfg.get("live_trading_enabled", False)
-DAILY_SPEND_LIMIT: float = _cfg.get("daily_spend_limit", 5.0)
+LIVE_TRADING: bool        = _cfg.get("live_trading_enabled", False)
+DAILY_SPEND_LIMIT: float  = _cfg.get("daily_spend_limit", 5.0)
+MAX_DRAWDOWN_PCT: float   = _cfg.get("max_drawdown_pct", 0.30)   # kill switch: halt if balance drops 30% from peak
+MAX_DAILY_LOSSES: int     = _cfg.get("max_daily_losses", 3)       # circuit breaker: halt after N losses in one day
 
 # =============================================================================
 # POSITION MANAGEMENT CONSTANTS (formerly magic numbers)

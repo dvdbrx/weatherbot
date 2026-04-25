@@ -12,5 +12,7 @@
   "max_slippage": 0.05,
   "sandbag_slippage": 0.03,
   "daily_spend_limit": 5.0,
+  "max_drawdown_pct": 0.30,
+  "max_daily_losses": 3,
   "live_trading_enabled": true
 }
