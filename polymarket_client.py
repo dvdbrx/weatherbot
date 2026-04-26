@@ -31,10 +31,10 @@ class PolymarketLiveClient:
 
         # Check proxy configuration
         self.proxy_configured = bool(os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY"))
-        if not self.proxy_configured:
+        if not self.proxy_configured and not os.environ.get("SKIP_PROXY_WARN"):
             log.warning("⚠️  No HTTPS_PROXY set — live order placement may be geo-blocked (403).")
             log.warning("   See .env for proxy setup instructions.")
-        else:
+        elif self.proxy_configured:
             log.info(f"✅ Proxy configured: {os.environ.get('HTTPS_PROXY', 'via HTTP_PROXY')}")
 
         self.client = ClobClient(host, key=self.private_key, chain_id=chain_id)
@@ -89,21 +89,11 @@ class PolymarketLiveClient:
             return []
 
     def place_order(self, token_id: str, side: str, price: float, size: float) -> dict | None:
-        """Places a Limit order for the specified token.
-        side: 'BUY' or 'SELL'
-        price: 0.0 to 1.0 (limit price)
-        size: number of shares
-        """
+        """Places a GTC limit order. Use place_order_fok() for live fills."""
         try:
-            order_args = OrderArgs(
-                token_id=token_id,
-                price=price,
-                size=size,
-                side=side
-            )
+            order_args = OrderArgs(token_id=token_id, price=price, size=size, side=side)
             order = self.client.create_order(order_args)
-            resp = self.client.post_order(order, OrderType.GTC)
-            return resp
+            return self.client.post_order(order, OrderType.GTC)
         except PolyApiException as e:
             if e.status_code == 403:
                 log.error(GEOBLOCK_MSG)
@@ -113,6 +103,50 @@ class PolymarketLiveClient:
         except Exception as e:
             log.error(f"Error placing {side} order: {e}")
             return None
+
+    def place_order_fok(self, token_id: str, side: str, price: float, size: float) -> dict | None:
+        """Places a Fill-Or-Kill order at the given price.
+        Fills immediately against resting orders at or better than price, or cancels.
+        No resting orders are left in the book. Ideal for live market execution.
+        price: should be the actual ask (BUY) or bid (SELL) from the orderbook.
+        """
+        try:
+            order_args = OrderArgs(token_id=token_id, price=price, size=size, side=side)
+            order = self.client.create_order(order_args)
+            return self.client.post_order(order, OrderType.FOK)
+        except PolyApiException as e:
+            if e.status_code == 403:
+                log.error(GEOBLOCK_MSG)
+            else:
+                log.error(f"CLOB API error placing FOK {side} order: {e}")
+            return None
+        except Exception as e:
+            log.error(f"Error placing FOK {side} order: {e}")
+            return None
+
+    def get_order_status(self, order_id: str) -> dict | None:
+        """Fetch a single order's current status from the CLOB."""
+        try:
+            return self.client.get_order(order_id)
+        except Exception as e:
+            log.error(f"Error fetching order status {order_id}: {e}")
+            return None
+
+    def confirm_fill_by_balance(
+        self, bal_before: float, retries: int = 3, delay: float = 2.0
+    ) -> tuple[bool, float]:
+        """Confirm a trade executed by checking wallet balance decreased.
+        Returns (filled: bool, actual_cost: float).
+        Polls up to retries times with delay seconds between each.
+        """
+        import time
+        for _ in range(retries):
+            time.sleep(delay)
+            bal_after = self.get_usdc_balance()
+            spent = round(bal_before - bal_after, 6)
+            if spent > 0.001:   # balance actually decreased
+                return True, spent
+        return False, 0.0
 
     def cancel_order(self, order_id: str) -> bool:
         try:

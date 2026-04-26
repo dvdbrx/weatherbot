@@ -251,21 +251,42 @@ def scan_and_update() -> tuple[int, int, int]:
                 if signal:
                     if LIVE_TRADING and live_client:
                         if signal.get("token_id"):
-                            print(f"  [LIVE] Placing BUY order for {signal['shares']} shares "
-                                  f"@ ${signal['entry_price']:.3f}")
-                            resp = live_client.place_order(
-                                signal["token_id"], "BUY",
-                                signal["entry_price"], signal["shares"],
+                            # FOK at actual ask price (not sandbagged) — fills immediately or cancels
+                            fok_price  = signal.get("ask_at_entry", signal["entry_price"])
+                            fok_shares = round(signal["cost"] / fok_price, 2)
+                            bal_before = live_client.get_usdc_balance()
+
+                            print(f"  [LIVE] FOK BUY {fok_shares} shares @ ${fok_price:.3f} "
+                                  f"| expected cost ${signal['cost']:.2f} "
+                                  f"| wallet before ${bal_before:.2f}")
+                            resp = live_client.place_order_fok(
+                                signal["token_id"], "BUY", fok_price, fok_shares
                             )
+
                             if resp and resp.get("success"):
-                                signal["live_order_id"] = resp.get("orderID")
-                                print(f"  [LIVE] Order {signal['live_order_id']} placed successfully.")
+                                order_id = resp.get("orderID", "")
+                                signal["live_order_id"] = order_id
+                                filled, actual_cost = live_client.confirm_fill_by_balance(
+                                    bal_before, retries=3, delay=2.0
+                                )
+                                if filled:
+                                    signal["entry_price"] = round(fok_price, 4)
+                                    signal["shares"]      = fok_shares
+                                    signal["cost"]        = actual_cost
+                                    print(f"  [LIVE] ✅ FILL CONFIRMED | {order_id} "
+                                          f"| actual cost ${actual_cost:.4f} "
+                                          f"| wallet ${bal_before:.2f} → ${bal_before - actual_cost:.2f}")
+                                else:
+                                    print(f"  [LIVE] ❌ FOK not filled — no liquidity at ${fok_price:.3f} "
+                                          f"(order {order_id} cancelled)")
+                                    signal = None
                             else:
-                                print(f"  [LIVE] Order failed: {resp}")
-                                signal = None  # don't record as open if order failed
+                                print(f"  [LIVE] Order placement failed: {resp}")
+                                signal = None
                         else:
-                            print(f"  [LIVE] Skipping: No token_id for market {signal['market_id']}")
+                            print(f"  [LIVE] Skipping: no token_id for market {signal['market_id']}")
                             signal = None
+
 
                     if signal:
                         balance -= signal["cost"]

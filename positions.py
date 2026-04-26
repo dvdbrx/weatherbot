@@ -164,6 +164,7 @@ def evaluate_signal(
             "bucket_low":    t_low,
             "bucket_high":   t_high,
             "entry_price":   round(sandbagged_ask, 4),
+            "ask_at_entry":  round(ask, 4),          # actual market ask for FOK execution
             "bid_at_entry":  bid,
             "spread":        spread,
             "shares":        round(size / sandbagged_ask, 2),
@@ -182,5 +183,6 @@ def evaluate_signal(
             "closed_at":     None,
             "live_order_id": None,
         }
+
 
     return None
