@@ -51,7 +51,29 @@ def bet_size(kelly: float, balance: float) -> float:
 
 
 def in_bucket(forecast: float, t_low: float, t_high: float) -> bool:
-    """Check if a forecast temperature falls within a bucket range."""
+    """Check whether forecast belongs to a canonical bucket interval.
+
+    Canonical rule:
+    - Interior buckets use lower-inclusive / upper-exclusive: [low, high)
+    - Singleton buckets (low == high) match that exact rounded degree
+    - Lower edge bucket (-inf, high) is exclusive at high
+    - Upper edge bucket [low, +inf) is inclusive at low
+    """
+    f = float(forecast)
+
+    # Singleton market (e.g., "Will it be exactly 72F?")
     if t_low == t_high:
-        return round(float(forecast)) == round(t_low)
-    return t_low <= float(forecast) <= t_high
+        return round(f) == round(t_low)
+
+    # Defensive guard for malformed market text/ranges.
+    if t_low > t_high:
+        return False
+
+    # Explicit edge-bucket handling to avoid adjacent-boundary double matches.
+    if t_low == EDGE_BUCKET_LOW:
+        return f < t_high
+    if t_high == EDGE_BUCKET_HIGH:
+        return f >= t_low
+
+    # Interior canonical interval.
+    return t_low <= f < t_high

@@ -104,6 +104,15 @@ def evaluate_signal(
     """
     sigma = get_sigma(cal, city_slug, best_source or "ecmwf")
 
+    candidates: list[dict] = []
+
+    active_count = None
+    if LIVE_TRADING:
+        active_count = len([
+            m for m in load_all_markets()
+            if m.get("position") and m["position"].get("status") == "open"
+        ])
+
     for o in outcomes:
         t_low, t_high = o["range"]
         price = o["price"]
@@ -145,16 +154,12 @@ def evaluate_signal(
 
         # Live trading sizing rules
         if LIVE_TRADING:
-            active_count = len([
-                m for m in load_all_markets()
-                if m.get("position") and m["position"].get("status") == "open"
-            ])
             if balance < 100:
-                if active_count >= 1:
+                if (active_count or 0) >= 1:
                     continue
                 size = min(balance * 0.9, 10.0)
             else:
-                if active_count >= 10:
+                if (active_count or 0) >= 10:
                     continue
                 size = 10.0
 
@@ -167,7 +172,7 @@ def evaluate_signal(
         if size < MIN_BET_SIZE:
             continue
 
-        return {
+        candidates.append({
             "market_id":     o["market_id"],
             "token_id":      o.get("token_id"),
             "question":      o["question"],
@@ -192,7 +197,11 @@ def evaluate_signal(
             "close_reason":  None,
             "closed_at":     None,
             "live_order_id": None,
-        }
+        })
 
+    if not candidates:
+        return None
 
-    return None
+    # Prefer highest EV candidate if malformed/overlapping market text yields
+    # multiple "matching" outcomes.
+    return max(candidates, key=lambda c: (c["ev"], c["p"], c["kelly"]))
