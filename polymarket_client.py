@@ -9,9 +9,16 @@ import requests
 from importlib import metadata
 from decimal import Decimal, ROUND_DOWN
 from datetime import datetime, timezone
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import ApiCreds, OrderArgs, OrderType, BalanceAllowanceParams, AssetType
-from py_clob_client.exceptions import PolyApiException
+try:
+    from py_clob_client_v2 import ClobClient, ApiCreds, OrderArgs, OrderType
+    from py_clob_client_v2 import BalanceAllowanceParams, AssetType
+    from py_clob_client_v2 import PolyApiException
+    SDK_FLAVOR = "v2"
+except ImportError:
+    from py_clob_client.client import ClobClient
+    from py_clob_client.clob_types import ApiCreds, OrderArgs, OrderType, BalanceAllowanceParams, AssetType
+    from py_clob_client.exceptions import PolyApiException
+    SDK_FLAVOR = "v1"
 
 from config import POLYGON_RPC_URL, USDC_E_CONTRACT
 
@@ -26,7 +33,7 @@ GEOBLOCK_MSG = (
 
 
 class PolymarketLiveClient:
-    def __init__(self, private_key: str | None = None, host: str = "https://clob.polymarket.com", chain_id: int = 137):
+    def __init__(self, private_key: str | None = None, host: str = "https://clob-v2.polymarket.com", chain_id: int = 137):
         self.private_key = private_key or os.getenv("POLYMARKET_PRIVATE_KEY")
         if not self.private_key:
             raise ValueError("Private key missing for Polymarket live client")
@@ -39,11 +46,8 @@ class PolymarketLiveClient:
         elif self.proxy_configured:
             log.info(f"✅ Proxy configured: {os.environ.get('HTTPS_PROXY', 'via HTTP_PROXY')}")
 
-        sdk_v2 = None
-        try:
-            sdk_v2 = metadata.version("py-clob-client-v2")
-        except metadata.PackageNotFoundError:
-            log.warning("⚠️  py-clob-client-v2 not installed. CLOB V2 order posting may fail.")
+        if SDK_FLAVOR != "v2":
+            log.warning("⚠️  Running legacy py-clob-client import path; CLOB V2 order posting may fail.")
             log.warning("   Fix: pip install -U py-clob-client-v2")
 
         signature_type = int(os.getenv("POLY_SIGNATURE_TYPE", "0"))
@@ -54,21 +58,22 @@ class PolymarketLiveClient:
                 "If this wallet is a proxy/safe account, set POLY_FUNDER=0x...",
                 signature_type
             )
-        if sdk_v2:
-            log.info("✅ py-clob-client-v2 detected: %s", sdk_v2)
-
         self.client = ClobClient(
-            host,
+            host=host,
             key=self.private_key,
             chain_id=chain_id,
             signature_type=signature_type,
             funder=funder,
         )
 
-        creds = self.client.create_or_derive_api_creds()
+        if hasattr(self.client, "create_or_derive_api_key"):
+            creds = self.client.create_or_derive_api_key()
+        else:
+            creds = self.client.create_or_derive_api_creds()
         if isinstance(creds, dict):
             creds = ApiCreds(**creds)
-        self.client.set_api_creds(creds)
+        if hasattr(self.client, "set_api_creds"):
+            self.client.set_api_creds(creds)
 
         self.trading_address = self.client.get_address()
         self.collateral_address = self.client.get_collateral_address()

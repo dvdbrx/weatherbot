@@ -16,9 +16,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import ApiCreds, OrderArgs, OrderType
-from py_clob_client.order_builder.constants import BUY
+SDK_FLAVOR = "v1"
+try:
+    from py_clob_client_v2 import ClobClient, ApiCreds, OrderArgs, OrderType, PartialCreateOrderOptions, Side
+    SDK_FLAVOR = "v2"
+except ImportError:
+    from py_clob_client.client import ClobClient
+    from py_clob_client.clob_types import ApiCreds, OrderArgs, OrderType
+    from py_clob_client.order_builder.constants import BUY as LEGACY_BUY
 
 # ── Pre-flight checks ────────────────────────────────────────────────
 pk = os.getenv('POLYMARKET_PRIVATE_KEY')
@@ -41,12 +46,11 @@ else:
 
 # ── Initialize CLOB client ───────────────────────────────────────────
 print("\n=== Initializing ===")
-try:
-    v2 = metadata.version("py-clob-client-v2")
-    print(f"✅ py-clob-client-v2 detected: {v2}")
-except metadata.PackageNotFoundError:
-    print("⚠️  py-clob-client-v2 not installed. Order posting may fail on CLOB V2.")
+if SDK_FLAVOR != "v2":
+    print("❌ py-clob-client-v2 is not importable in this environment.")
     print("   Fix: pip install -U py-clob-client-v2")
+    exit(1)
+print("✅ Using py-clob-client-v2")
 
 signature_type = int(os.getenv("POLY_SIGNATURE_TYPE", "0"))
 funder = os.getenv("POLY_FUNDER") or None
@@ -55,16 +59,20 @@ if signature_type in (1, 2) and not funder:
     print("   If this is a proxy/safe wallet, set POLY_FUNDER=0x...")
 
 client = ClobClient(
-    'https://clob.polymarket.com',
+    host=os.getenv("POLY_CLOB_HOST", "https://clob-v2.polymarket.com"),
     key=pk,
     chain_id=137,
     signature_type=signature_type,
     funder=funder,
 )
-creds = client.create_or_derive_api_creds()
+if hasattr(client, "create_or_derive_api_key"):
+    creds = client.create_or_derive_api_key()
+else:
+    creds = client.create_or_derive_api_creds()
 if isinstance(creds, dict):
     creds = ApiCreds(**creds)
-client.set_api_creds(creds)
+if hasattr(client, "set_api_creds"):
+    client.set_api_creds(creds)
 print(f"🔑 Wallet: {client.get_address()}")
 
 # ── Find a tradeable non-neg-risk market ──────────────────────────────
@@ -123,7 +131,7 @@ print(f"  ⚡ This order will NOT fill — it just tests the pipeline")
 order_args = OrderArgs(
     price=test_price,
     size=test_size,
-    side=BUY,
+    side=Side.BUY if SDK_FLAVOR == "v2" else LEGACY_BUY,
     token_id=target['tid'],
 )
 
@@ -133,7 +141,13 @@ print("  ✅ Signed")
 
 print("  Posting to CLOB...")
 try:
-    resp = client.post_order(signed_order, OrderType.GTC)
+    if hasattr(client, "create_and_post_order"):
+        resp = client.create_and_post_order(
+            order_args=order_args,
+            options=PartialCreateOrderOptions(order_type=OrderType.GTC),
+        )
+    else:
+        resp = client.post_order(signed_order, OrderType.GTC)
 except Exception as e:
     err_str = str(e)
     if "403" in err_str or "restricted" in err_str.lower() or "geoblock" in err_str.lower():
