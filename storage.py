@@ -121,6 +121,9 @@ def load_state() -> dict:
         "today_losses":     0,
         "halted":           False,
         "halt_reason":      None,
+        "state_desync":     False,
+        "state_desync_reasons": [],
+        "state_desync_since": None,
     }
 
 
