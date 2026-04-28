@@ -116,12 +116,14 @@ class PolymarketLiveClient:
                 continue
             except Exception as e:
                 log.warning(f"Error fetching fills via {method_name}: {e}")
-                return []
+                continue
         return []
 
     @staticmethod
     def _extract_token_id(record: dict) -> str | None:
-        for key in ("token_id", "tokenID", "asset_id", "assetId", "market_id", "marketId"):
+        # Only token/asset identifiers are safe here; market/condition IDs are broader
+        # and can cause false mismatches during reconciliation.
+        for key in ("token_id", "tokenID", "tokenId", "asset_id", "assetId", "outcomeTokenId"):
             value = record.get(key)
             if value is not None:
                 return str(value)
@@ -133,6 +135,14 @@ class PolymarketLiveClient:
         if side is None:
             return None
         return str(side).upper()
+
+    @staticmethod
+    def _side_sign(side: str | None) -> float | None:
+        if side in {"BUY", "BID", "LONG"}:
+            return 1.0
+        if side in {"SELL", "ASK", "SHORT"}:
+            return -1.0
+        return None
 
     @staticmethod
     def _extract_size(record: dict) -> float:
@@ -158,10 +168,12 @@ class PolymarketLiveClient:
             if not token_id:
                 continue
             side = self._extract_side(order)
+            sign = self._side_sign(side)
+            if sign is None:
+                continue
             size = self._extract_size(order)
             if size <= 0:
                 continue
-            sign = 1.0 if side == "BUY" else -1.0
             pending_by_token[token_id] = pending_by_token.get(token_id, 0.0) + sign * size
 
         filled_by_token: dict[str, float] = {}
@@ -172,10 +184,12 @@ class PolymarketLiveClient:
             if not token_id:
                 continue
             side = self._extract_side(fill)
+            sign = self._side_sign(side)
+            if sign is None:
+                continue
             size = self._extract_size(fill)
             if size <= 0:
                 continue
-            sign = 1.0 if side == "BUY" else -1.0
             filled_by_token[token_id] = filled_by_token.get(token_id, 0.0) + sign * size
 
         return {
