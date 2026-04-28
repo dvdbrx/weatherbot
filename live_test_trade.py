@@ -15,9 +15,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import ApiCreds, OrderArgs, OrderType
-from py_clob_client.order_builder.constants import BUY
+SDK_FLAVOR = "v1"
+try:
+    from py_clob_client_v2 import ClobClient, ApiCreds, OrderArgs, OrderType, Side
+    SDK_FLAVOR = "v2"
+except ImportError:
+    from py_clob_client.client import ClobClient
+    from py_clob_client.clob_types import ApiCreds, OrderArgs, OrderType
+    from py_clob_client.order_builder.constants import BUY as LEGACY_BUY
 
 # ── Pre-flight checks ────────────────────────────────────────────────
 pk = os.getenv('POLYMARKET_PRIVATE_KEY')
@@ -40,11 +45,33 @@ else:
 
 # ── Initialize CLOB client ───────────────────────────────────────────
 print("\n=== Initializing ===")
-client = ClobClient('https://clob.polymarket.com', key=pk, chain_id=137)
-creds = client.create_or_derive_api_creds()
+if SDK_FLAVOR != "v2":
+    print("❌ py-clob-client-v2 is not importable in this environment.")
+    print("   Fix: pip install -U py-clob-client-v2")
+    exit(1)
+print("✅ Using py-clob-client-v2")
+
+signature_type = int(os.getenv("POLY_SIGNATURE_TYPE", "0"))
+funder = os.getenv("POLY_FUNDER") or None
+if signature_type in (1, 2) and not funder:
+    print(f"⚠️  POLY_SIGNATURE_TYPE={signature_type} but POLY_FUNDER is empty.")
+    print("   If this is a proxy/safe wallet, set POLY_FUNDER=0x...")
+
+client = ClobClient(
+    host=os.getenv("POLY_CLOB_HOST", "https://clob.polymarket.com"),
+    key=pk,
+    chain_id=137,
+    signature_type=signature_type,
+    funder=funder,
+)
+if hasattr(client, "create_or_derive_api_key"):
+    creds = client.create_or_derive_api_key()
+else:
+    creds = client.create_or_derive_api_creds()
 if isinstance(creds, dict):
     creds = ApiCreds(**creds)
-client.set_api_creds(creds)
+if hasattr(client, "set_api_creds"):
+    client.set_api_creds(creds)
 print(f"🔑 Wallet: {client.get_address()}")
 
 # ── Find a tradeable non-neg-risk market ──────────────────────────────
@@ -78,12 +105,33 @@ print(f"   YES price: {target['yes']:.4f}")
 # ── Check orderbook ───────────────────────────────────────────────────
 print("\n=== Checking orderbook ===")
 book = client.get_order_book(target['tid'])
-if not book or not book.bids or not book.asks:
+
+if isinstance(book, dict):
+    bids = book.get("bids") or []
+    asks = book.get("asks") or []
+else:
+    bids = getattr(book, "bids", []) or []
+    asks = getattr(book, "asks", []) or []
+
+if not bids or not asks:
     print("❌ No orderbook. Market may be closed/illiquid.")
     exit(1)
 
-bid = float(book.bids[0].price)
-ask = float(book.asks[0].price)
+def _price(level):
+    if hasattr(level, "price"):
+        return float(level.price)
+    if isinstance(level, dict):
+        value = level.get("price")
+        if value is None:
+            value = level.get("px")
+        if value is None:
+            value = level.get("p")
+        if value is not None:
+            return float(value)
+    raise ValueError(f"Unrecognized orderbook level format: {level}")
+
+bid = _price(bids[0])
+ask = _price(asks[0])
 spread = ask - bid
 print(f"  Bid: {bid:.4f} | Ask: {ask:.4f} | Spread: {spread:.4f}")
 
@@ -103,7 +151,7 @@ print(f"  ⚡ This order will NOT fill — it just tests the pipeline")
 order_args = OrderArgs(
     price=test_price,
     size=test_size,
-    side=BUY,
+    side=Side.BUY if SDK_FLAVOR == "v2" else LEGACY_BUY,
     token_id=target['tid'],
 )
 
@@ -113,7 +161,15 @@ print("  ✅ Signed")
 
 print("  Posting to CLOB...")
 try:
-    resp = client.post_order(signed_order, OrderType.GTC)
+    if hasattr(client, "post_order"):
+        try:
+            resp = client.post_order(signed_order, OrderType.GTC)
+        except TypeError:
+            resp = client.post_order(order=signed_order, order_type=OrderType.GTC)
+    elif hasattr(client, "create_and_post_order"):
+        resp = client.create_and_post_order(order_args=order_args)
+    else:
+        raise RuntimeError("No supported order submission method found on client.")
 except Exception as e:
     err_str = str(e)
     if "403" in err_str or "restricted" in err_str.lower() or "geoblock" in err_str.lower():
