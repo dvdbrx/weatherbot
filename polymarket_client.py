@@ -88,9 +88,32 @@ class PolymarketLiveClient:
             print(f"Error fetching orders: {e}")
             return []
 
+    @staticmethod
+    def _sanitize(price: float, size: float) -> tuple[float, float]:
+        """Enforce Polymarket CLOB precision rules before order creation.
+
+        The CLOB enforces:
+          - maker amount (shares): max 2 decimal places
+          - taker amount (USDC):   max 4 decimal places
+          - price:                 max 2 decimal places (cent grid)
+
+        Rounding price first, then re-deriving size from the rounded price
+        ensures the implied USDC cost (size * price) also stays within 4dp.
+        We floor shares slightly (rather than round) to avoid overshooting the
+        intended $ spend.
+        """
+        price = round(price, 2)
+        size  = round(size,  2)
+        # Verify implied USDC cost fits within 4dp; if not, trim size by 0.01
+        implied_cost = round(size * price, 4)
+        if round(implied_cost, 4) != implied_cost:
+            size = round(size - 0.01, 2)
+        return price, size
+
     def place_order(self, token_id: str, side: str, price: float, size: float) -> dict | None:
         """Places a GTC limit order. Use place_order_fok() for live fills."""
         try:
+            price, size = self._sanitize(price, size)
             order_args = OrderArgs(token_id=token_id, price=price, size=size, side=side)
             order = self.client.create_order(order_args)
             return self.client.post_order(order, OrderType.GTC)
@@ -111,6 +134,7 @@ class PolymarketLiveClient:
         price: should be the actual ask (BUY) or bid (SELL) from the orderbook.
         """
         try:
+            price, size = self._sanitize(price, size)
             order_args = OrderArgs(token_id=token_id, price=price, size=size, side=side)
             order = self.client.create_order(order_args)
             return self.client.post_order(order, OrderType.FOK)
