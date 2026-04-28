@@ -36,7 +36,7 @@ from storage import (
     load_state, save_state,
     load_market, save_market, load_all_markets,
     new_market, load_cal, run_calibration, get_sigma,
-    reset_daily_if_new_day, check_risk_guards,
+    reset_daily_if_new_day, check_risk_guards, calculate_equity,
 )
 from positions import check_stop_loss, check_forecast_shift, evaluate_signal
 
@@ -118,12 +118,17 @@ def scan_and_update() -> tuple[int, int, int]:
     # Roll over daily counters if UTC date changed
     state = reset_daily_if_new_day(state)
 
+    # Equity-based drawdown checks (mark open positions to latest bid/price).
+    markets = load_all_markets()
+    state["equity"] = calculate_equity(state, markets)
+    state["peak_equity"] = max(state.get("peak_equity", state["equity"]), state["equity"])
+
     # Check risk guards before doing anything
     halted, halt_reason = check_risk_guards(state)
     if halted:
         save_state(state)
         _HALT_REASONS = {
-            "max_drawdown": f"⛔ MAX DRAWDOWN exceeded ({MAX_DRAWDOWN_PCT:.0%} from peak) — bot HALTED.",
+            "max_drawdown": f"⛔ MAX DRAWDOWN exceeded ({MAX_DRAWDOWN_PCT:.0%} from equity peak) — bot HALTED.",
             "daily_spend":  f"🛑 Daily spend limit ${DAILY_SPEND_LIMIT:.2f} reached — no new trades today.",
             "daily_losses": f"🛑 Daily loss limit ({MAX_DAILY_LOSSES} losses) reached — no new trades today.",
         }
@@ -363,6 +368,19 @@ def scan_and_update() -> tuple[int, int, int]:
 
     state["balance"] = round(balance, 2)
     state["peak_balance"] = max(state.get("peak_balance", balance), balance)
+
+    refreshed_markets = load_all_markets()
+    state["equity"] = calculate_equity(state, refreshed_markets)
+    state["peak_equity"] = max(state.get("peak_equity", state["equity"]), state["equity"])
+    halted, halt_reason = check_risk_guards(state)
+    if halted:
+        _HALT_REASONS = {
+            "max_drawdown": f"⛔ MAX DRAWDOWN exceeded ({MAX_DRAWDOWN_PCT:.0%} from equity peak) — bot HALTED.",
+            "daily_spend":  f"🛑 Daily spend limit ${DAILY_SPEND_LIMIT:.2f} reached — no new trades today.",
+            "daily_losses": f"🛑 Daily loss limit ({MAX_DAILY_LOSSES} losses) reached — no new trades today.",
+        }
+        print(_HALT_REASONS.get(halt_reason, f"⛔ Trading halted: {halt_reason}"))
+
     save_state(state)
 
     # Run calibration if enough data
@@ -445,7 +463,12 @@ def monitor_positions() -> int:
 
     if closed:
         state["balance"] = round(balance, 2)
-        save_state(state)
+
+    refreshed_markets = load_all_markets()
+    state["equity"] = calculate_equity(state, refreshed_markets)
+    state["peak_equity"] = max(state.get("peak_equity", state["equity"]), state["equity"])
+    check_risk_guards(state)
+    save_state(state)
 
     return closed
 
@@ -461,6 +484,7 @@ def print_status() -> None:
     resolved = [m for m in markets if m["status"] == "resolved" and m.get("pnl") is not None]
 
     bal = state["balance"]
+    eq = state.get("equity", bal)
     start = state["starting_balance"]
     wins = state["wins"]
     losses = state["losses"]
@@ -492,8 +516,8 @@ def print_status() -> None:
 
 
     # Risk guard summary
-    peak = state.get("peak_balance", bal)
-    drawdown = (peak - bal) / peak * 100 if peak > 0 else 0
+    peak = state.get("peak_equity", eq)
+    drawdown = (peak - eq) / peak * 100 if peak > 0 else 0
     today_spent  = state.get("today_spent", 0.0)
     today_losses = state.get("today_losses", 0)
     halted       = state.get("halted", False)
@@ -501,6 +525,7 @@ def print_status() -> None:
     print(f"\n  Risk Guards:")
     print(f"    Daily spend:  ${today_spent:.2f} / ${DAILY_SPEND_LIMIT:.2f}")
     print(f"    Daily losses: {today_losses} / {MAX_DAILY_LOSSES}")
+    print(f"    Equity:       ${eq:,.2f} (peak ${peak:,.2f})")
     print(f"    Peak drawdown:{drawdown:.1f}% (limit {MAX_DRAWDOWN_PCT*100:.0f}%)")
     if halted:
         print(f"    ⛔ HALTED — reason: {halt_reason}")
