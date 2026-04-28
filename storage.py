@@ -203,36 +203,46 @@ def get_sigma(cal: dict, city_slug: str, source: str = "ecmwf") -> float:
 
 def run_calibration(markets: list[dict]) -> dict:
     """Recalculate sigma from resolved markets."""
-    resolved = [m for m in markets if m.get("resolved") and m.get("actual_temp") is not None]
+    resolved = [
+        m for m in markets
+        if m.get("status") == "resolved" and m.get("actual_temp") is not None
+    ]
     cal = load_cal()
     updated: list[str] = []
+    errors_by_key: dict[str, list[float]] = {}
 
-    for source in ["ecmwf", "hrrr", "metar"]:
-        for city in set(m["city"] for m in resolved):
-            group = [m for m in resolved if m["city"] == city]
-            errors: list[float] = []
-            for m in group:
-                snap = next(
-                    (s for s in reversed(m.get("forecast_snapshots", []))
-                     if s["source"] == source), None
-                )
-                if snap and snap.get("temp") is not None:
-                    errors.append(abs(snap["temp"] - m["actual_temp"]))
-            if len(errors) < CALIBRATION_MIN:
-                continue
-            mae = sum(errors) / len(errors)
-            key = f"{city}_{source}"
-            old = cal.get(key, {}).get(
-                "sigma", SIGMA_F if LOCATIONS[city]["unit"] == "F" else SIGMA_C
+    for m in resolved:
+        city = m["city"]
+        actual_temp = m["actual_temp"]
+        snapshots = m.get("forecast_snapshots", [])
+
+        for source in ["ecmwf", "hrrr", "metar"]:
+            snap = next(
+                (s for s in reversed(snapshots) if s.get(source) is not None),
+                None,
             )
-            new = round(mae, 3)
-            cal[key] = {
-                "sigma": new,
-                "n": len(errors),
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }
-            if abs(new - old) > 0.05:
-                updated.append(f"{LOCATIONS[city]['name']} {source}: {old:.2f}->{new:.2f}")
+            if snap is None:
+                continue
+            key = f"{city}_{source}"
+            errors_by_key.setdefault(key, []).append(abs(snap[source] - actual_temp))
+
+    for key, errors in errors_by_key.items():
+        if len(errors) < CALIBRATION_MIN:
+            continue
+
+        city, source = key.rsplit("_", 1)
+        mae = sum(errors) / len(errors)
+        old = cal.get(key, {}).get(
+            "sigma", SIGMA_F if LOCATIONS[city]["unit"] == "F" else SIGMA_C
+        )
+        new = round(mae, 3)
+        cal[key] = {
+            "sigma": new,
+            "n": len(errors),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if abs(new - old) > 0.05:
+            updated.append(f"{LOCATIONS[city]['name']} {source}: {old:.2f}->{new:.2f}")
 
     CALIBRATION_FILE.write_text(json.dumps(cal, indent=2), encoding="utf-8")
     if updated:
