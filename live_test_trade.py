@@ -11,6 +11,7 @@ import os
 import json
 import time
 import requests
+from importlib import metadata
 from dotenv import load_dotenv
 
 load_dotenv()
