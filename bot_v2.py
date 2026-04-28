@@ -233,14 +233,15 @@ def reconcile_live_state(state: dict) -> tuple[bool, list[str]]:
     }
 
     reasons: list[str] = []
+    warnings: list[str] = []
 
     # Only treat exposures for locally-known tokens as desync blockers.
     # Wallet may contain unrelated legacy/manual positions that this bot does not own.
     relevant_wallet_exposure = wallet_exposed_tokens & known_local_tokens
     wallet_only = sorted(relevant_wallet_exposure - local_open_tokens)
     if wallet_only:
-        reasons.append(
-            "wallet exposed but local position closed/missing: "
+        warnings.append(
+            "wallet exposure exists for non-open local positions (non-blocking): "
             f"{_fmt_tokens(wallet_only)}"
         )
 
@@ -253,16 +254,24 @@ def reconcile_live_state(state: dict) -> tuple[bool, list[str]]:
 
     relevant_pending = sorted(wallet_pending_tokens & known_local_tokens)
     if relevant_pending:
-        reasons.append(f"wallet has open/pending orders: {_fmt_tokens(relevant_pending)}")
+        warnings.append(
+            "wallet has open/pending orders for known tokens (non-blocking): "
+            f"{_fmt_tokens(relevant_pending)}"
+        )
 
     desync = len(reasons) > 0
     _set_state_desync(state, desync, reasons)
+    state["state_desync_warnings"] = warnings
 
     if desync:
         print("🚨 [DESYNC] Local state does not match CLOB wallet exposure.")
         for reason in reasons:
             print(f"🚨 [DESYNC] {reason}")
         print("🚨 [DESYNC] New entries are HALTED until reconciliation succeeds.")
+    elif warnings:
+        print("⚠️ [DESYNC] Non-blocking wallet/local reconciliation warnings:")
+        for warning in warnings:
+            print(f"⚠️ [DESYNC] {warning}")
     elif was_desynced:
         print("✅ [DESYNC] Local state reconciled with CLOB wallet; entry halt cleared.")
 
@@ -751,6 +760,9 @@ def print_status() -> None:
                 print(f"    🚨 Desync since: {since}")
             for reason in state.get("state_desync_reasons", []):
                 print(f"    🚨 {reason}")
+    elif state.get("state_desync_warnings"):
+        for warning in state.get("state_desync_warnings", []):
+            print(f"    ⚠️ {warning}")
     else:
         print(f"    ✅ Trading active")
 
