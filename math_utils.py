@@ -19,13 +19,20 @@ def bucket_prob(forecast: float, t_low: float, t_high: float, sigma: float = 2.0
     """Probability that the actual temp lands in [t_low, t_high] given forecast and sigma.
 
     For edge buckets ("X or below" / "X or higher"), uses normal CDF.
-    For standard buckets, returns 1.0 if forecast is in range, else 0.0.
+    For standard buckets, uses the interval mass of a normal distribution.
     """
+    sigma = max(float(sigma), 1e-6)
+    forecast = float(forecast)
+
     if t_low == EDGE_BUCKET_LOW:
-        return norm_cdf((t_high - float(forecast)) / sigma)
+        p = norm_cdf((t_high - forecast) / sigma)
+        return min(max(p, 0.0), 1.0)
     if t_high == EDGE_BUCKET_HIGH:
-        return 1.0 - norm_cdf((t_low - float(forecast)) / sigma)
-    return 1.0 if in_bucket(forecast, t_low, t_high) else 0.0
+        p = 1.0 - norm_cdf((t_low - forecast) / sigma)
+        return min(max(p, 0.0), 1.0)
+
+    p = norm_cdf((t_high - forecast) / sigma) - norm_cdf((t_low - forecast) / sigma)
+    return min(max(p, 0.0), 1.0)
 
 
 def calc_ev(p: float, price: float) -> float:
@@ -51,7 +58,29 @@ def bet_size(kelly: float, balance: float) -> float:
 
 
 def in_bucket(forecast: float, t_low: float, t_high: float) -> bool:
-    """Check if a forecast temperature falls within a bucket range."""
+    """Check whether forecast belongs to a canonical bucket interval.
+
+    Canonical rule:
+    - Interior buckets use lower-inclusive / upper-exclusive: [low, high)
+    - Singleton buckets (low == high) match that exact rounded degree
+    - Lower edge bucket (-inf, high) is exclusive at high
+    - Upper edge bucket [low, +inf) is inclusive at low
+    """
+    f = float(forecast)
+
+    # Singleton market (e.g., "Will it be exactly 72F?")
     if t_low == t_high:
-        return round(float(forecast)) == round(t_low)
-    return t_low <= float(forecast) <= t_high
+        return round(f) == round(t_low)
+
+    # Defensive guard for malformed market text/ranges.
+    if t_low > t_high:
+        return False
+
+    # Explicit edge-bucket handling to avoid adjacent-boundary double matches.
+    if t_low == EDGE_BUCKET_LOW:
+        return f < t_high
+    if t_high == EDGE_BUCKET_HIGH:
+        return f >= t_low
+
+    # Interior canonical interval.
+    return t_low <= f < t_high

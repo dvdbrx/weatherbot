@@ -38,7 +38,7 @@ from storage import (
     load_state, save_state,
     load_market, save_market, load_all_markets,
     new_market, load_cal, run_calibration, get_sigma,
-    reset_daily_if_new_day, check_risk_guards,
+    reset_daily_if_new_day, check_risk_guards, calculate_equity,
 )
 from positions import check_stop_loss, check_forecast_shift, evaluate_signal
 
@@ -96,13 +96,46 @@ def _close_position(pos: dict, current_price: float, reason: str, ts: str | None
     return pnl
 
 
-def _execute_sell(pos: dict, current_price: float, reason_label: str) -> None:
-    """Execute a live sell order if in live trading mode."""
-    if LIVE_TRADING and live_client and pos.get("token_id"):
-        print(f"  [LIVE] Placing SELL order ({reason_label}) for {pos['shares']} shares @ ${current_price:.3f}")
-        resp = live_client.place_order(pos["token_id"], "SELL", current_price, pos["shares"])
-        if not (resp and resp.get("success")):
-            print(f"  [LIVE] SELL failed: {resp}")
+def _execute_sell(pos: dict, current_price: float, reason_label: str) -> dict:
+    """Execute a sell and return execution status metadata."""
+    if not (LIVE_TRADING and live_client):
+        return {"success": True, "order_id": None, "error": None}
+
+    token_id = pos.get("token_id")
+    if not token_id:
+        return {"success": False, "order_id": None, "error": "missing_token_id"}
+
+    print(f"  [LIVE] Placing SELL order ({reason_label}) for {pos['shares']} shares @ ${current_price:.3f}")
+    resp = live_client.place_order(token_id, "SELL", current_price, pos["shares"])
+    order_id = resp.get("orderID") if isinstance(resp, dict) else None
+    if resp and resp.get("success"):
+        return {"success": True, "order_id": order_id, "error": None}
+
+    return {
+        "success": False,
+        "order_id": order_id,
+        "error": str(resp) if resp is not None else "empty_response",
+    }
+
+
+def _mark_pending_exit_retry(mkt: dict, pos: dict, reason: str, current_price: float, sell_status: dict, ts: str | None) -> None:
+    """Keep position open after failed live sell and persist retry context."""
+    order_id = sell_status.get("order_id") if isinstance(sell_status, dict) else None
+    error = sell_status.get("error") if isinstance(sell_status, dict) else str(sell_status)
+    pos["status"] = "open"
+    pos["pending_exit_retry"] = True
+    pos["pending_exit_reason"] = reason
+    pos["pending_exit_price"] = current_price
+    pos["pending_exit_order_id"] = order_id
+    pos["pending_exit_error"] = error
+    pos["pending_exit_updated_at"] = ts
+
+    print(
+        "  [LIVE] SELL failed; keeping position open for retry | "
+        f"market={mkt.get('id') or mkt.get('market_id') or pos.get('market_id')} "
+        f"token={pos.get('token_id')} order_id={order_id} "
+        f"reason={reason} error={error}"
+    )
 
 
 
@@ -163,12 +196,17 @@ def scan_and_update() -> tuple[int, int, int]:
     # Roll over daily counters if UTC date changed
     state = reset_daily_if_new_day(state)
 
+    # Equity-based drawdown checks (mark open positions to latest bid/price).
+    markets = load_all_markets()
+    state["equity"] = calculate_equity(state, markets)
+    state["peak_equity"] = max(state.get("peak_equity", state["equity"]), state["equity"])
+
     # Check risk guards before doing anything
     halted, halt_reason = check_risk_guards(state)
     if halted:
         save_state(state)
         _HALT_REASONS = {
-            "max_drawdown": f"⛔ MAX DRAWDOWN exceeded ({MAX_DRAWDOWN_PCT:.0%} from peak) — bot HALTED.",
+            "max_drawdown": f"⛔ MAX DRAWDOWN exceeded ({MAX_DRAWDOWN_PCT:.0%} from equity peak) — bot HALTED.",
             "daily_spend":  f"🛑 Daily spend limit ${DAILY_SPEND_LIMIT:.2f} reached — no new trades today.",
             "daily_losses": f"🛑 Daily loss limit ({MAX_DAILY_LOSSES} losses) reached — no new trades today.",
         }
@@ -265,6 +303,17 @@ def scan_and_update() -> tuple[int, int, int]:
 
                         if result and not result.get("trailing_only"):
                             _execute_sell(pos, current_price, result["close_reason"])
+                    result = check_stop_loss(pos, current_price, pos["entry_price"])
+
+                    if result and not result.get("trailing_only"):
+                        sell_status = _execute_sell(pos, current_price, result["close_reason"])
+                        if sell_status["success"]:
+                            pos.pop("pending_exit_retry", None)
+                            pos.pop("pending_exit_reason", None)
+                            pos.pop("pending_exit_price", None)
+                            pos.pop("pending_exit_order_id", None)
+                            pos.pop("pending_exit_error", None)
+                            pos.pop("pending_exit_updated_at", None)
                             pnl = _close_position(pos, current_price, result["close_reason"], snap.get("ts"))
                             balance += pos["cost"] + pnl
                             closed += 1
@@ -274,6 +323,11 @@ def scan_and_update() -> tuple[int, int, int]:
                         elif result and result.get("trailing_only"):
                             pos["stop_price"] = result["stop_price"]
                             pos["trailing_activated"] = True
+                        else:
+                            _mark_pending_exit_retry(mkt, pos, result["close_reason"], current_price, sell_status, snap.get("ts"))
+                    elif result and result.get("trailing_only"):
+                        pos["stop_price"] = result["stop_price"]
+                        pos["trailing_activated"] = True
 
             # --- CLOSE POSITION if forecast shifted ---
             if (mkt.get("position") and mkt["position"].get("status") == "open"
@@ -288,17 +342,27 @@ def scan_and_update() -> tuple[int, int, int]:
                         if actionable_price is not None:
                             current_price = actionable_price
                             _execute_sell(pos, current_price, "Forecast Shift")
+                        sell_status = _execute_sell(pos, current_price, "Forecast Shift")
+                        if sell_status["success"]:
+                            pos.pop("pending_exit_retry", None)
+                            pos.pop("pending_exit_reason", None)
+                            pos.pop("pending_exit_price", None)
+                            pos.pop("pending_exit_order_id", None)
+                            pos.pop("pending_exit_error", None)
+                            pos.pop("pending_exit_updated_at", None)
                             pnl = _close_position(pos, current_price, "forecast_changed", snap.get("ts"))
                             balance += pos["cost"] + pnl
                             closed += 1
                             print(f"  [CLOSE] {loc['name']} {date} — forecast changed | "
                                   f"PnL: {'+'if pnl>=0 else ''}{pnl:.2f}")
+                        else:
+                            _mark_pending_exit_retry(mkt, pos, "forecast_changed", current_price, sell_status, snap.get("ts"))
 
             # --- OPEN POSITION ---
             if not mkt.get("position") and forecast_temp is not None and hours >= MIN_HOURS:
                 signal = evaluate_signal(
                     outcomes, forecast_temp, best_source,
-                    city_slug, _cal, balance, snap.get("ts"), live_client,
+                    city_slug, date, _cal, balance, snap.get("ts"), live_client,
                     today_spent=state.get("today_spent", 0.0),
                 )
                 if signal:
@@ -413,6 +477,19 @@ def scan_and_update() -> tuple[int, int, int]:
 
     state["balance"] = round(balance, 2)
     state["peak_balance"] = max(state.get("peak_balance", balance), balance)
+
+    refreshed_markets = load_all_markets()
+    state["equity"] = calculate_equity(state, refreshed_markets)
+    state["peak_equity"] = max(state.get("peak_equity", state["equity"]), state["equity"])
+    halted, halt_reason = check_risk_guards(state)
+    if halted:
+        _HALT_REASONS = {
+            "max_drawdown": f"⛔ MAX DRAWDOWN exceeded ({MAX_DRAWDOWN_PCT:.0%} from equity peak) — bot HALTED.",
+            "daily_spend":  f"🛑 Daily spend limit ${DAILY_SPEND_LIMIT:.2f} reached — no new trades today.",
+            "daily_losses": f"🛑 Daily loss limit ({MAX_DAILY_LOSSES} losses) reached — no new trades today.",
+        }
+        print(_HALT_REASONS.get(halt_reason, f"⛔ Trading halted: {halt_reason}"))
+
     save_state(state)
 
     # Run calibration if enough data
@@ -476,16 +553,26 @@ def monitor_positions() -> int:
         result = check_stop_loss(pos, current_price, entry)
 
         if result and not result.get("trailing_only"):
-            _execute_sell(pos, current_price, result["close_reason"])
-            pnl = _close_position(pos, current_price, result["close_reason"],
-                                  ts)
-            balance += pos["cost"] + pnl
-            closed += 1
-            city_name = LOCATIONS.get(mkt["city"], {}).get("name", mkt["city"])
-            print(f"  [{result['label']}] {city_name} {mkt['date']} | "
-                  f"entry ${entry:.3f} exit ${current_price:.3f} | "
-                  f"PnL: {'+'if pnl>=0 else ''}{pnl:.2f}")
-            save_market(mkt)
+            sell_status = _execute_sell(pos, current_price, result["close_reason"])
+            if sell_status["success"]:
+                pos.pop("pending_exit_retry", None)
+                pos.pop("pending_exit_reason", None)
+                pos.pop("pending_exit_price", None)
+                pos.pop("pending_exit_order_id", None)
+                pos.pop("pending_exit_error", None)
+                pos.pop("pending_exit_updated_at", None)
+                pnl = _close_position(pos, current_price, result["close_reason"],
+                                      ts)
+                balance += pos["cost"] + pnl
+                closed += 1
+                city_name = LOCATIONS.get(mkt["city"], {}).get("name", mkt["city"])
+                print(f"  [{result['label']}] {city_name} {mkt['date']} | "
+                      f"entry ${entry:.3f} exit ${current_price:.3f} | "
+                      f"PnL: {'+'if pnl>=0 else ''}{pnl:.2f}")
+                save_market(mkt)
+            else:
+                _mark_pending_exit_retry(mkt, pos, result["close_reason"], current_price, sell_status, ts)
+                save_market(mkt)
         elif result and result.get("trailing_only"):
             pos["stop_price"] = result["stop_price"]
             pos["trailing_activated"] = True
@@ -495,7 +582,12 @@ def monitor_positions() -> int:
 
     if closed:
         state["balance"] = round(balance, 2)
-        save_state(state)
+
+    refreshed_markets = load_all_markets()
+    state["equity"] = calculate_equity(state, refreshed_markets)
+    state["peak_equity"] = max(state.get("peak_equity", state["equity"]), state["equity"])
+    check_risk_guards(state)
+    save_state(state)
 
     return closed
 
@@ -511,6 +603,7 @@ def print_status() -> None:
     resolved = [m for m in markets if m["status"] == "resolved" and m.get("pnl") is not None]
 
     bal = state["balance"]
+    eq = state.get("equity", bal)
     start = state["starting_balance"]
     wins = state["wins"]
     losses = state["losses"]
@@ -542,8 +635,8 @@ def print_status() -> None:
 
 
     # Risk guard summary
-    peak = state.get("peak_balance", bal)
-    drawdown = (peak - bal) / peak * 100 if peak > 0 else 0
+    peak = state.get("peak_equity", eq)
+    drawdown = (peak - eq) / peak * 100 if peak > 0 else 0
     today_spent  = state.get("today_spent", 0.0)
     today_losses = state.get("today_losses", 0)
     halted       = state.get("halted", False)
@@ -551,6 +644,7 @@ def print_status() -> None:
     print(f"\n  Risk Guards:")
     print(f"    Daily spend:  ${today_spent:.2f} / ${DAILY_SPEND_LIMIT:.2f}")
     print(f"    Daily losses: {today_losses} / {MAX_DAILY_LOSSES}")
+    print(f"    Equity:       ${eq:,.2f} (peak ${peak:,.2f})")
     print(f"    Peak drawdown:{drawdown:.1f}% (limit {MAX_DRAWDOWN_PCT*100:.0f}%)")
     if halted:
         print(f"    ⛔ HALTED — reason: {halt_reason}")
