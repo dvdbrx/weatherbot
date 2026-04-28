@@ -5,7 +5,6 @@ Consolidates the previously duplicated position management logic.
 """
 
 from datetime import datetime, timezone
-import json
 
 from config import (
     LOCATIONS, MIN_EV, MAX_PRICE, MIN_VOLUME,
@@ -17,54 +16,8 @@ from config import (
 )
 from math_utils import bucket_prob, calc_ev, calc_kelly, bet_size, in_bucket
 from polymarket_api import get_current_price
+from quote_utils import guard_quote_for_action, log_skip_trade_action
 from storage import load_all_markets, get_sigma
-
-
-
-
-def _parse_iso_ts(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except Exception:
-        return None
-
-
-def _quote_guard(outcome: dict, snap_ts: str | None, max_age_seconds: int) -> tuple[bool, str, dict]:
-    bid = outcome.get("bid")
-    ask = outcome.get("ask")
-    meta = {
-        "market_id": outcome.get("market_id"),
-        "quote_ts": outcome.get("quote_ts"),
-        "snapshot_ts": snap_ts,
-        "bid": bid,
-        "ask": ask,
-        "max_age_seconds": max_age_seconds,
-    }
-    if bid is None or ask is None:
-        return False, "missing_bid_ask", meta
-    if not (0 < bid <= ask < 1):
-        return False, "invalid_bid_ask", meta
-
-    if snap_ts and outcome.get("quote_ts"):
-        snap_dt = _parse_iso_ts(snap_ts)
-        quote_dt = _parse_iso_ts(outcome.get("quote_ts"))
-        if snap_dt and quote_dt:
-            age_seconds = (snap_dt - quote_dt).total_seconds()
-            meta["quote_age_seconds"] = round(age_seconds, 2)
-            if age_seconds > max_age_seconds:
-                return False, "stale_quote", meta
-    return True, "ok", meta
-
-
-def _log_structured_warning(reason: str, details: dict) -> None:
-    print(json.dumps({
-        "level": "warning",
-        "event": "skip_trade_action",
-        "reason": reason,
-        **details,
-    }, sort_keys=True))
 
 
 def check_stop_loss(
@@ -174,9 +127,16 @@ def evaluate_signal(
         if bid is None:
             bid = ask if ask is not None else tradable_price
 
-        quote_ok, quote_reason, quote_meta = _quote_guard(o, snap_ts, QUOTE_MAX_AGE_SECONDS)
+        quote_ok, quote_reason, quote_meta = guard_quote_for_action(
+            bid=o.get("bid"),
+            ask=o.get("ask"),
+            quote_ts=o.get("quote_ts"),
+            snapshot_ts=snap_ts,
+            max_age_seconds=QUOTE_MAX_AGE_SECONDS,
+        )
+        quote_meta["market_id"] = o.get("market_id")
         if not quote_ok:
-            _log_structured_warning(quote_reason, quote_meta)
+            log_skip_trade_action(quote_reason, quote_meta)
             continue
 
         # Slippage filter

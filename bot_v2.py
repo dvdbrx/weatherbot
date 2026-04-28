@@ -15,7 +15,6 @@ Usage:
 import sys
 import os
 import time
-import json
 import requests
 from datetime import datetime, timezone, timedelta
 
@@ -34,6 +33,7 @@ from polymarket_api import (
     get_polymarket_event, check_market_resolved,
     hours_to_resolution, parse_outcomes, get_current_price,
 )
+from quote_utils import guard_quote_for_action, log_skip_trade_action
 from storage import (
     load_state, save_state,
     load_market, save_market, load_all_markets,
@@ -106,24 +106,6 @@ def _execute_sell(pos: dict, current_price: float, reason_label: str) -> None:
 
 
 
-def _parse_iso_ts(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except Exception:
-        return None
-
-
-def _log_skip_warning(reason: str, details: dict) -> None:
-    print(json.dumps({
-        "level": "warning",
-        "event": "skip_trade_action",
-        "reason": reason,
-        **details,
-    }, sort_keys=True))
-
-
 def _get_actionable_market_quote(
     outcomes: list[dict],
     market_id: str,
@@ -132,7 +114,7 @@ def _get_actionable_market_quote(
 ) -> tuple[float | None, dict | None]:
     outcome = next((o for o in outcomes if o.get("market_id") == market_id), None)
     if not outcome:
-        _log_skip_warning("missing_market_outcome", {
+        log_skip_trade_action("missing_market_outcome", {
             "market_id": market_id,
             "snapshot_ts": snap_ts,
             "action": action,
@@ -151,22 +133,17 @@ def _get_actionable_market_quote(
         "action": action,
     }
 
-    if bid is None or ask is None:
-        _log_skip_warning("missing_bid_ask", meta)
+    quote_ok, quote_reason, quote_meta = guard_quote_for_action(
+        bid=bid,
+        ask=ask,
+        quote_ts=outcome.get("quote_ts"),
+        snapshot_ts=snap_ts,
+        max_age_seconds=QUOTE_MAX_AGE_SECONDS,
+    )
+    quote_meta.update({"market_id": market_id, "action": action})
+    if not quote_ok:
+        log_skip_trade_action(quote_reason, quote_meta)
         return None, outcome
-    if not (0 < bid <= ask < 1):
-        _log_skip_warning("invalid_bid_ask", meta)
-        return None, outcome
-
-    if snap_ts and outcome.get("quote_ts"):
-        snap_dt = _parse_iso_ts(snap_ts)
-        quote_dt = _parse_iso_ts(outcome.get("quote_ts"))
-        if snap_dt and quote_dt:
-            age_seconds = (snap_dt - quote_dt).total_seconds()
-            meta["quote_age_seconds"] = round(age_seconds, 2)
-            if age_seconds > QUOTE_MAX_AGE_SECONDS:
-                _log_skip_warning("stale_quote", meta)
-                return None, outcome
 
     return bid, outcome
 
