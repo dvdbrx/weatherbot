@@ -248,7 +248,7 @@ def scan_and_update() -> tuple[int, int, int]:
             if not mkt.get("position") and forecast_temp is not None and hours >= MIN_HOURS:
                 signal = evaluate_signal(
                     outcomes, forecast_temp, best_source,
-                    city_slug, _cal, balance, snap.get("ts"), live_client,
+                    city_slug, date, _cal, balance, snap.get("ts"), live_client,
                     today_spent=state.get("today_spent", 0.0),
                 )
                 if signal:
