@@ -94,13 +94,46 @@ def _close_position(pos: dict, current_price: float, reason: str, ts: str | None
     return pnl
 
 
-def _execute_sell(pos: dict, current_price: float, reason_label: str) -> None:
-    """Execute a live sell order if in live trading mode."""
-    if LIVE_TRADING and live_client and pos.get("token_id"):
-        print(f"  [LIVE] Placing SELL order ({reason_label}) for {pos['shares']} shares @ ${current_price:.3f}")
-        resp = live_client.place_order(pos["token_id"], "SELL", current_price, pos["shares"])
-        if not (resp and resp.get("success")):
-            print(f"  [LIVE] SELL failed: {resp}")
+def _execute_sell(pos: dict, current_price: float, reason_label: str) -> dict:
+    """Execute a sell and return execution status metadata."""
+    if not (LIVE_TRADING and live_client):
+        return {"success": True, "order_id": None, "error": None}
+
+    token_id = pos.get("token_id")
+    if not token_id:
+        return {"success": False, "order_id": None, "error": "missing_token_id"}
+
+    print(f"  [LIVE] Placing SELL order ({reason_label}) for {pos['shares']} shares @ ${current_price:.3f}")
+    resp = live_client.place_order(token_id, "SELL", current_price, pos["shares"])
+    order_id = resp.get("orderID") if isinstance(resp, dict) else None
+    if resp and resp.get("success"):
+        return {"success": True, "order_id": order_id, "error": None}
+
+    return {
+        "success": False,
+        "order_id": order_id,
+        "error": str(resp) if resp is not None else "empty_response",
+    }
+
+
+def _mark_pending_exit_retry(mkt: dict, pos: dict, reason: str, current_price: float, sell_status: dict, ts: str | None) -> None:
+    """Keep position open after failed live sell and persist retry context."""
+    order_id = sell_status.get("order_id") if isinstance(sell_status, dict) else None
+    error = sell_status.get("error") if isinstance(sell_status, dict) else str(sell_status)
+    pos["status"] = "open"
+    pos["pending_exit_retry"] = True
+    pos["pending_exit_reason"] = reason
+    pos["pending_exit_price"] = current_price
+    pos["pending_exit_order_id"] = order_id
+    pos["pending_exit_error"] = error
+    pos["pending_exit_updated_at"] = ts
+
+    print(
+        "  [LIVE] SELL failed; keeping position open for retry | "
+        f"market={mkt.get('id') or mkt.get('market_id') or pos.get('market_id')} "
+        f"token={pos.get('token_id')} order_id={order_id} "
+        f"reason={reason} error={error}"
+    )
 
 # =============================================================================
 # CORE: SCAN AND UPDATE
@@ -219,13 +252,22 @@ def scan_and_update() -> tuple[int, int, int]:
                     result = check_stop_loss(pos, current_price, pos["entry_price"])
 
                     if result and not result.get("trailing_only"):
-                        _execute_sell(pos, current_price, result["close_reason"])
-                        pnl = _close_position(pos, current_price, result["close_reason"], snap.get("ts"))
-                        balance += pos["cost"] + pnl
-                        closed += 1
-                        print(f"  [{result['label']}] {loc['name']} {date} | "
-                              f"entry ${pos['entry_price']:.3f} exit ${current_price:.3f} | "
-                              f"PnL: {'+'if pnl>=0 else ''}{pnl:.2f}")
+                        sell_status = _execute_sell(pos, current_price, result["close_reason"])
+                        if sell_status["success"]:
+                            pos.pop("pending_exit_retry", None)
+                            pos.pop("pending_exit_reason", None)
+                            pos.pop("pending_exit_price", None)
+                            pos.pop("pending_exit_order_id", None)
+                            pos.pop("pending_exit_error", None)
+                            pos.pop("pending_exit_updated_at", None)
+                            pnl = _close_position(pos, current_price, result["close_reason"], snap.get("ts"))
+                            balance += pos["cost"] + pnl
+                            closed += 1
+                            print(f"  [{result['label']}] {loc['name']} {date} | "
+                                  f"entry ${pos['entry_price']:.3f} exit ${current_price:.3f} | "
+                                  f"PnL: {'+'if pnl>=0 else ''}{pnl:.2f}")
+                        else:
+                            _mark_pending_exit_retry(mkt, pos, result["close_reason"], current_price, sell_status, snap.get("ts"))
                     elif result and result.get("trailing_only"):
                         pos["stop_price"] = result["stop_price"]
                         pos["trailing_activated"] = True
@@ -237,12 +279,21 @@ def scan_and_update() -> tuple[int, int, int]:
                 if check_forecast_shift(pos, forecast_temp, loc):
                     current_price = get_current_price(outcomes, pos["market_id"])
                     if current_price is not None:
-                        _execute_sell(pos, current_price, "Forecast Shift")
-                        pnl = _close_position(pos, current_price, "forecast_changed", snap.get("ts"))
-                        balance += pos["cost"] + pnl
-                        closed += 1
-                        print(f"  [CLOSE] {loc['name']} {date} — forecast changed | "
-                              f"PnL: {'+'if pnl>=0 else ''}{pnl:.2f}")
+                        sell_status = _execute_sell(pos, current_price, "Forecast Shift")
+                        if sell_status["success"]:
+                            pos.pop("pending_exit_retry", None)
+                            pos.pop("pending_exit_reason", None)
+                            pos.pop("pending_exit_price", None)
+                            pos.pop("pending_exit_order_id", None)
+                            pos.pop("pending_exit_error", None)
+                            pos.pop("pending_exit_updated_at", None)
+                            pnl = _close_position(pos, current_price, "forecast_changed", snap.get("ts"))
+                            balance += pos["cost"] + pnl
+                            closed += 1
+                            print(f"  [CLOSE] {loc['name']} {date} — forecast changed | "
+                                  f"PnL: {'+'if pnl>=0 else ''}{pnl:.2f}")
+                        else:
+                            _mark_pending_exit_retry(mkt, pos, "forecast_changed", current_price, sell_status, snap.get("ts"))
 
             # --- OPEN POSITION ---
             if not mkt.get("position") and forecast_temp is not None and hours >= MIN_HOURS:
@@ -426,16 +477,26 @@ def monitor_positions() -> int:
         result = check_stop_loss(pos, current_price, entry)
 
         if result and not result.get("trailing_only"):
-            _execute_sell(pos, current_price, result["close_reason"])
-            pnl = _close_position(pos, current_price, result["close_reason"],
-                                  ts)
-            balance += pos["cost"] + pnl
-            closed += 1
-            city_name = LOCATIONS.get(mkt["city"], {}).get("name", mkt["city"])
-            print(f"  [{result['label']}] {city_name} {mkt['date']} | "
-                  f"entry ${entry:.3f} exit ${current_price:.3f} | "
-                  f"PnL: {'+'if pnl>=0 else ''}{pnl:.2f}")
-            save_market(mkt)
+            sell_status = _execute_sell(pos, current_price, result["close_reason"])
+            if sell_status["success"]:
+                pos.pop("pending_exit_retry", None)
+                pos.pop("pending_exit_reason", None)
+                pos.pop("pending_exit_price", None)
+                pos.pop("pending_exit_order_id", None)
+                pos.pop("pending_exit_error", None)
+                pos.pop("pending_exit_updated_at", None)
+                pnl = _close_position(pos, current_price, result["close_reason"],
+                                      ts)
+                balance += pos["cost"] + pnl
+                closed += 1
+                city_name = LOCATIONS.get(mkt["city"], {}).get("name", mkt["city"])
+                print(f"  [{result['label']}] {city_name} {mkt['date']} | "
+                      f"entry ${entry:.3f} exit ${current_price:.3f} | "
+                      f"PnL: {'+'if pnl>=0 else ''}{pnl:.2f}")
+                save_market(mkt)
+            else:
+                _mark_pending_exit_retry(mkt, pos, result["close_reason"], current_price, sell_status, ts)
+                save_market(mkt)
         elif result and result.get("trailing_only"):
             pos["stop_price"] = result["stop_price"]
             pos["trailing_activated"] = True
