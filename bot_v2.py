@@ -197,7 +197,7 @@ def _set_state_desync(state: dict, active: bool, reasons: list[str]) -> None:
             state["halt_reason"] = None
 
 
-def reconcile_live_state(state: dict) -> tuple[bool, list[str]]:
+def reconcile_live_state(state: dict, markets: list[dict] | None = None) -> tuple[bool, list[str]]:
     """Compare local open positions vs. CLOB wallet exposure and flag desync."""
     was_desynced = bool(state.get("state_desync"))
     if not (LIVE_TRADING and live_client):
@@ -205,46 +205,74 @@ def reconcile_live_state(state: dict) -> tuple[bool, list[str]]:
             _set_state_desync(state, False, [])
         return False, []
 
+    def _fmt_tokens(tokens: list[str], limit: int = 5) -> str:
+        if len(tokens) <= limit:
+            return str(tokens)
+        head = tokens[:limit]
+        return f"{head} ... (+{len(tokens) - limit} more)"
+
     local_open_tokens: set[str] = set()
-    for mkt in load_all_markets():
+    known_local_tokens: set[str] = set()
+    market_rows = markets if markets is not None else load_all_markets()
+    for mkt in market_rows:
         pos = mkt.get("position")
-        if pos and pos.get("status") == "open" and pos.get("token_id"):
-            local_open_tokens.add(str(pos["token_id"]))
+        if not (pos and pos.get("token_id")):
+            continue
+        token_id = str(pos["token_id"])
+        known_local_tokens.add(token_id)
+        if pos.get("status") == "open":
+            local_open_tokens.add(token_id)
 
     exposure = live_client.get_wallet_exposure()
     filled_by_token = exposure.get("filled_by_token", {})
     pending_by_token = exposure.get("pending_by_token", {})
 
-    wallet_exposed_tokens = {
-        token for token, qty in filled_by_token.items()
-        if qty > 0.01
-    }
+    wallet_exposed_tokens = {token for token, qty in filled_by_token.items() if qty > 0.01}
     wallet_pending_tokens = {
         token for token, qty in pending_by_token.items()
         if abs(qty) > 0.01
     }
 
     reasons: list[str] = []
+    warnings: list[str] = []
 
-    wallet_only = sorted(wallet_exposed_tokens - local_open_tokens)
+    # Only treat exposures for locally-known tokens as desync blockers.
+    # Wallet may contain unrelated legacy/manual positions that this bot does not own.
+    relevant_wallet_exposure = wallet_exposed_tokens & known_local_tokens
+    wallet_only = sorted(relevant_wallet_exposure - local_open_tokens)
     if wallet_only:
-        reasons.append(f"wallet exposed but local position closed/missing: {wallet_only}")
+        warnings.append(
+            "wallet exposure exists for non-open local positions (non-blocking): "
+            f"{_fmt_tokens(wallet_only)}"
+        )
 
     local_only = sorted(local_open_tokens - wallet_exposed_tokens)
     if local_only:
-        reasons.append(f"local position open but wallet exposure missing: {local_only}")
+        reasons.append(
+            "local position open but wallet exposure missing: "
+            f"{_fmt_tokens(local_only)}"
+        )
 
-    if wallet_pending_tokens:
-        reasons.append(f"wallet has open/pending orders: {sorted(wallet_pending_tokens)}")
+    relevant_pending = sorted(wallet_pending_tokens & known_local_tokens)
+    if relevant_pending:
+        warnings.append(
+            "wallet has open/pending orders for known tokens (non-blocking): "
+            f"{_fmt_tokens(relevant_pending)}"
+        )
 
     desync = len(reasons) > 0
     _set_state_desync(state, desync, reasons)
+    state["state_desync_warnings"] = warnings
 
     if desync:
         print("🚨 [DESYNC] Local state does not match CLOB wallet exposure.")
         for reason in reasons:
             print(f"🚨 [DESYNC] {reason}")
         print("🚨 [DESYNC] New entries are HALTED until reconciliation succeeds.")
+    elif warnings:
+        print("⚠️ [DESYNC] Non-blocking wallet/local reconciliation warnings:")
+        for warning in warnings:
+            print(f"⚠️ [DESYNC] {warning}")
     elif was_desynced:
         print("✅ [DESYNC] Local state reconciled with CLOB wallet; entry halt cleared.")
 
@@ -271,7 +299,12 @@ def scan_and_update() -> tuple[int, int, int]:
     state["equity"] = calculate_equity(state, markets)
     state["peak_equity"] = max(state.get("peak_equity", state["equity"]), state["equity"])
 
-    # Check risk guards before doing anything
+    desync, _ = reconcile_live_state(state, markets)
+    if desync:
+        save_state(state)
+        return 0, 0, 0
+
+    # Check risk guards before doing anything else.
     halted, halt_reason = check_risk_guards(state)
     if halted:
         save_state(state)
@@ -282,11 +315,6 @@ def scan_and_update() -> tuple[int, int, int]:
             "state_desync": "🚨 State desync detected — new entries halted until local/CLOB reconciliation succeeds.",
         }
         print(_HALT_REASONS.get(halt_reason, f"⛔ Trading halted: {halt_reason}"))
-        return 0, 0, 0
-
-    desync, _ = reconcile_live_state(state)
-    if desync:
-        save_state(state)
         return 0, 0, 0
 
     if LIVE_TRADING and live_client:
@@ -305,6 +333,7 @@ def scan_and_update() -> tuple[int, int, int]:
     for city_slug, loc in LOCATIONS.items():
         unit = loc["unit"]
         unit_sym = "F" if unit == "F" else "C"
+        dirty_markets: dict[str, dict] = {}
         print(f"  -> {loc['name']}...", end=" ", flush=True)
 
         try:
@@ -375,10 +404,6 @@ def scan_and_update() -> tuple[int, int, int]:
                     )
                     if actionable_price is not None:
                         current_price = actionable_price
-                        result = check_stop_loss(pos, current_price, pos["entry_price"])
-
-                        if result and not result.get("trailing_only"):
-                            _execute_sell(pos, current_price, result["close_reason"])
                     result = check_stop_loss(pos, current_price, pos["entry_price"])
 
                     if result and not result.get("trailing_only"):
@@ -417,7 +442,6 @@ def scan_and_update() -> tuple[int, int, int]:
                         )
                         if actionable_price is not None:
                             current_price = actionable_price
-                            _execute_sell(pos, current_price, "Forecast Shift")
                         sell_status = _execute_sell(pos, current_price, "Forecast Shift")
                         if sell_status["success"]:
                             pos.pop("pending_exit_retry", None)
@@ -508,8 +532,11 @@ def scan_and_update() -> tuple[int, int, int]:
             if hours < 0.5 and mkt["status"] == "open":
                 mkt["status"] = "closed"
 
-            save_market(mkt)
-            time.sleep(0.1)
+            dirty_markets[f"{mkt['city']}::{mkt['date']}"] = mkt
+
+        for dirty_mkt in dirty_markets.values():
+            save_market(dirty_mkt)
+            time.sleep(0.03)
 
         print("ok")
 
@@ -589,11 +616,11 @@ def scan_and_update() -> tuple[int, int, int]:
 def monitor_positions() -> int:
     """Quick stop check on open positions without full scan."""
     state = load_state()
-    reconcile_live_state(state)
+    all_mkts = load_all_markets()
+    reconcile_live_state(state, all_mkts)
     save_state(state)
 
-    markets = load_all_markets()
-    open_pos = [m for m in markets if m.get("position") and m["position"].get("status") == "open"]
+    open_pos = [m for m in all_mkts if m.get("position") and m["position"].get("status") == "open"]
     if not open_pos:
         return 0
 
@@ -733,6 +760,9 @@ def print_status() -> None:
                 print(f"    🚨 Desync since: {since}")
             for reason in state.get("state_desync_reasons", []):
                 print(f"    🚨 {reason}")
+    elif state.get("state_desync_warnings"):
+        for warning in state.get("state_desync_warnings", []):
+            print(f"    ⚠️ {warning}")
     else:
         print(f"    ✅ Trading active")
 

@@ -125,6 +125,7 @@ def load_state() -> dict:
         "halt_reason":      None,
         "state_desync":     False,
         "state_desync_reasons": [],
+        "state_desync_warnings": [],
         "state_desync_since": None,
     }
 
