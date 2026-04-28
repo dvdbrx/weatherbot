@@ -8,9 +8,16 @@ import logging
 import requests
 from decimal import Decimal, ROUND_DOWN
 from datetime import datetime, timezone
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import ApiCreds, OrderArgs, OrderType, BalanceAllowanceParams, AssetType
-from py_clob_client.exceptions import PolyApiException
+try:
+    from py_clob_client_v2 import ClobClient, ApiCreds, OrderArgs, OrderType
+    from py_clob_client_v2 import BalanceAllowanceParams, AssetType
+    from py_clob_client_v2 import PolyApiException
+    SDK_FLAVOR = "v2"
+except ImportError:
+    from py_clob_client.client import ClobClient
+    from py_clob_client.clob_types import ApiCreds, OrderArgs, OrderType, BalanceAllowanceParams, AssetType
+    from py_clob_client.exceptions import PolyApiException
+    SDK_FLAVOR = "v1"
 
 from config import POLYGON_RPC_URL, USDC_E_CONTRACT
 
@@ -38,12 +45,34 @@ class PolymarketLiveClient:
         elif self.proxy_configured:
             log.info(f"✅ Proxy configured: {os.environ.get('HTTPS_PROXY', 'via HTTP_PROXY')}")
 
-        self.client = ClobClient(host, key=self.private_key, chain_id=chain_id)
+        if SDK_FLAVOR != "v2":
+            log.warning("⚠️  Running legacy py-clob-client import path; CLOB V2 order posting may fail.")
+            log.warning("   Fix: pip install -U py-clob-client-v2")
 
-        creds = self.client.create_or_derive_api_creds()
+        signature_type = int(os.getenv("POLY_SIGNATURE_TYPE", "0"))
+        funder = os.getenv("POLY_FUNDER") or None
+        if signature_type in (1, 2) and not funder:
+            log.warning(
+                "⚠️  POLY_SIGNATURE_TYPE=%s but POLY_FUNDER is empty. "
+                "If this wallet is a proxy/safe account, set POLY_FUNDER=0x...",
+                signature_type
+            )
+        self.client = ClobClient(
+            host=host,
+            key=self.private_key,
+            chain_id=chain_id,
+            signature_type=signature_type,
+            funder=funder,
+        )
+
+        if hasattr(self.client, "create_or_derive_api_key"):
+            creds = self.client.create_or_derive_api_key()
+        else:
+            creds = self.client.create_or_derive_api_creds()
         if isinstance(creds, dict):
             creds = ApiCreds(**creds)
-        self.client.set_api_creds(creds)
+        if hasattr(self.client, "set_api_creds"):
+            self.client.set_api_creds(creds)
 
         self.trading_address = self.client.get_address()
         self.collateral_address = self.client.get_collateral_address()
