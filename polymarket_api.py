@@ -34,6 +34,48 @@ def _parse_json_array(raw_value) -> list:
     return []
 
 
+
+
+def _parse_timestamp(value) -> str | None:
+    """Normalize timestamp-ish values from Gamma into ISO-8601 strings."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            ts = float(value)
+            if ts > 1e12:
+                ts /= 1000.0
+            return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+        except Exception:
+            return None
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).isoformat()
+        except Exception:
+            return raw
+    return None
+
+
+def _extract_quote_timestamp(market: dict) -> str | None:
+    """Return the best available quote/update timestamp from a market payload."""
+    for key in (
+        "quoteTimestamp",
+        "quotesTimestamp",
+        "priceTimestamp",
+        "lastTradeTime",
+        "lastTradeTimestamp",
+        "updatedAt",
+        "updated_at",
+        "timestamp",
+    ):
+        ts = _parse_timestamp(market.get(key))
+        if ts:
+            return ts
+    return None
+
 def _get_yes_side_quotes(market: dict) -> tuple[float | None, float | None, float | None]:
     """Extract YES-side bid/ask/price from same-outcome fields (not YES/NO pair values)."""
     # First preference: explicit YES quote fields.
@@ -178,6 +220,7 @@ def parse_outcomes(event: dict) -> list[dict]:
         if not rng:
             continue
         bid, ask, price = _get_yes_side_quotes(market)
+        quote_ts = _extract_quote_timestamp(market)
         if price is None:
             continue
 
@@ -198,6 +241,7 @@ def parse_outcomes(event: dict) -> list[dict]:
             "price":     round(price, 4),
             "spread":    round(ask - bid, 4) if (bid is not None and ask is not None) else None,
             "volume":    round(volume, 0),
+            "quote_ts":  quote_ts,
         })
 
     outcomes.sort(key=lambda x: x["range"][0])

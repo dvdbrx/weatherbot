@@ -2,7 +2,7 @@
   "balance": 10000.0,
   "max_bet": 5.0,
   "min_ev": 0.15,
-  "max_price": 0.50,
+  "max_price": 0.5,
   "min_volume": 1000,
   "min_hours": 2.0,
   "max_hours": 72.0,
@@ -11,8 +11,13 @@
   "calibration_min": 30,
   "max_slippage": 0.05,
   "sandbag_slippage": 0.03,
+  "quote_max_age_seconds": 90,
   "daily_spend_limit": 5.0,
-  "max_drawdown_pct": 0.30,
+  "max_drawdown_pct": 0.3,
   "max_daily_losses": 3,
-  "live_trading_enabled": true
+  "live_trading_enabled": true,
+  "max_positions_per_city": 3,
+  "max_positions_per_date": 8,
+  "max_region_exposure": 50.0,
+  "max_adjacent_bucket_exposure": 25.0
 }

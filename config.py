@@ -33,6 +33,7 @@ MAX_HOURS: float         = _cfg.get("max_hours", 72.0)
 KELLY_FRACTION: float    = _cfg.get("kelly_fraction", 0.25)
 MAX_SLIPPAGE: float      = _cfg.get("max_slippage", 0.03)
 SANDBAG_SLIPPAGE: float  = _cfg.get("sandbag_slippage", 0.03)
+QUOTE_MAX_AGE_SECONDS: int = int(_cfg.get("quote_max_age_seconds", 90))
 SCAN_INTERVAL: int       = _cfg.get("scan_interval", 3600)
 CALIBRATION_MIN: int     = _cfg.get("calibration_min", 30)
 MONITOR_INTERVAL: int    = 600  # monitor positions every 10 minutes
@@ -45,6 +46,10 @@ LIVE_TRADING: bool        = _cfg.get("live_trading_enabled", False)
 DAILY_SPEND_LIMIT: float  = _cfg.get("daily_spend_limit", 5.0)
 MAX_DRAWDOWN_PCT: float   = _cfg.get("max_drawdown_pct", 0.30)   # kill switch: halt if balance drops 30% from peak
 MAX_DAILY_LOSSES: int     = _cfg.get("max_daily_losses", 3)       # circuit breaker: halt after N losses in one day
+MAX_POSITIONS_PER_CITY: int       = _cfg.get("max_positions_per_city", 3)
+MAX_POSITIONS_PER_DATE: int       = _cfg.get("max_positions_per_date", 8)
+MAX_REGION_EXPOSURE: float        = _cfg.get("max_region_exposure", 50.0)
+MAX_ADJACENT_BUCKET_EXPOSURE: float = _cfg.get("max_adjacent_bucket_exposure", 25.0)
 
 # =============================================================================
 # POSITION MANAGEMENT CONSTANTS (formerly magic numbers)

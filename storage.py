@@ -116,6 +116,8 @@ def load_state() -> dict:
         "wins":             0,
         "losses":           0,
         "peak_balance":     BALANCE,
+        "equity":           BALANCE,
+        "peak_equity":      BALANCE,
         "today_date":       "",
         "today_spent":      0.0,
         "today_losses":     0,
@@ -145,6 +147,45 @@ def reset_daily_if_new_day(state: dict) -> dict:
     return state
 
 
+def _position_mark_to_market(position: dict, outcomes: list[dict]) -> float | None:
+    """Return best available mark for an open position from cached outcomes."""
+    market_id = position.get("market_id")
+    if not market_id:
+        return None
+
+    for outcome in outcomes or []:
+        if outcome.get("market_id") != market_id:
+            continue
+        bid = outcome.get("bid")
+        if bid is not None:
+            return float(bid)
+        price = outcome.get("price")
+        if price is not None:
+            return float(price)
+    return None
+
+
+def calculate_equity(state: dict, markets: list[dict]) -> float:
+    """Compute equity = cash balance + unrealized PnL on all open positions."""
+    balance = float(state.get("balance", 0.0))
+    unrealized = 0.0
+
+    for market in markets:
+        position = market.get("position")
+        if not position or position.get("status") != "open":
+            continue
+
+        mark = _position_mark_to_market(position, market.get("all_outcomes", []))
+        if mark is None:
+            continue
+
+        entry = float(position.get("entry_price", 0.0))
+        shares = float(position.get("shares", 0.0))
+        unrealized += (mark - entry) * shares
+
+    return round(balance + unrealized, 2)
+
+
 def check_risk_guards(state: dict) -> tuple[bool, str | None]:
     """Evaluate all risk guards and return (halted, reason).
 
@@ -157,11 +198,11 @@ def check_risk_guards(state: dict) -> tuple[bool, str | None]:
     if state.get("halted"):
         return True, state.get("halt_reason", "manual_halt")
 
-    balance      = state["balance"]
-    peak_balance = state.get("peak_balance", balance)
+    equity = float(state.get("equity", state.get("balance", 0.0)))
+    peak_equity = float(state.get("peak_equity", equity))
 
-    # Guard 1 — max drawdown kill switch
-    if peak_balance > 0 and (peak_balance - balance) / peak_balance >= MAX_DRAWDOWN_PCT:
+    # Guard 1 — max drawdown kill switch (equity-based)
+    if peak_equity > 0 and (peak_equity - equity) / peak_equity >= MAX_DRAWDOWN_PCT:
         state["halted"]      = True
         state["halt_reason"] = "max_drawdown"
         return True, "max_drawdown"

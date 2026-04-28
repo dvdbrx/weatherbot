@@ -12,9 +12,13 @@ from config import (
     STOP_LOSS_PCT, TRAILING_ACTIVATION_PCT,
     MIN_BET_SIZE, MAX_SANDBAGGED_PRICE,
     LIVE_TRADING, DAILY_SPEND_LIMIT,
+    QUOTE_MAX_AGE_SECONDS,
+    MAX_POSITIONS_PER_CITY, MAX_POSITIONS_PER_DATE,
+    MAX_REGION_EXPOSURE, MAX_ADJACENT_BUCKET_EXPOSURE,
 )
 from math_utils import bucket_prob, calc_ev, calc_kelly, bet_size, in_bucket
 from polymarket_api import get_current_price
+from quote_utils import guard_quote_for_action, log_skip_trade_action
 from storage import load_all_markets, get_sigma
 
 
@@ -91,6 +95,7 @@ def evaluate_signal(
     forecast_temp: float,
     best_source: str | None,
     city_slug: str,
+    date_str: str,
     cal: dict,
     balance: float,
     snap_ts: str | None,
@@ -103,14 +108,42 @@ def evaluate_signal(
     Returns None immediately if any risk guard (daily spend, etc.) would be breached.
     """
     sigma = get_sigma(cal, city_slug, best_source or "ecmwf")
+    all_markets = load_all_markets()
+    open_markets = [
+        m for m in all_markets
+        if m.get("position") and m["position"].get("status") == "open"
+    ]
+
+    city_open_count = sum(1 for m in open_markets if m.get("city") == city_slug)
+    if city_open_count >= MAX_POSITIONS_PER_CITY:
+        return None
+
+    date_open_count = sum(1 for m in open_markets if m.get("date") == date_str)
+    if date_open_count >= MAX_POSITIONS_PER_DATE:
+        return None
+
+    city_region = LOCATIONS[city_slug]["region"]
+    region_open_exposure = sum(
+        m["position"].get("cost", 0.0)
+        for m in open_markets
+        if LOCATIONS.get(m.get("city", ""), {}).get("region") == city_region
+    )
+    if region_open_exposure >= MAX_REGION_EXPOSURE:
+        return None
+
+    candidates: list[dict] = []
+
+    active_count = None
+    if LIVE_TRADING:
+        active_count = len([
+            m for m in load_all_markets()
+            if m.get("position") and m["position"].get("status") == "open"
+        ])
 
     for o in outcomes:
         t_low, t_high = o["range"]
         price = o["price"]
         volume = o["volume"]
-
-        if not in_bucket(forecast_temp, t_low, t_high):
-            continue
 
         bid = o.get("bid")
         ask = o.get("ask")
@@ -124,6 +157,18 @@ def evaluate_signal(
             ask = bid if bid is not None else tradable_price
         if bid is None:
             bid = ask if ask is not None else tradable_price
+
+        quote_ok, quote_reason, quote_meta = guard_quote_for_action(
+            bid=o.get("bid"),
+            ask=o.get("ask"),
+            quote_ts=o.get("quote_ts"),
+            snapshot_ts=snap_ts,
+            max_age_seconds=QUOTE_MAX_AGE_SECONDS,
+        )
+        quote_meta["market_id"] = o.get("market_id")
+        if not quote_ok:
+            log_skip_trade_action(quote_reason, quote_meta)
+            continue
 
         # Slippage filter
         if spread is not None and spread > MAX_SLIPPAGE:
@@ -145,16 +190,12 @@ def evaluate_signal(
 
         # Live trading sizing rules
         if LIVE_TRADING:
-            active_count = len([
-                m for m in load_all_markets()
-                if m.get("position") and m["position"].get("status") == "open"
-            ])
             if balance < 100:
-                if active_count >= 1:
+                if (active_count or 0) >= 1:
                     continue
                 size = min(balance * 0.9, 10.0)
             else:
-                if active_count >= 10:
+                if (active_count or 0) >= 10:
                     continue
                 size = 10.0
 
@@ -166,8 +207,30 @@ def evaluate_signal(
 
         if size < MIN_BET_SIZE:
             continue
+        candidate_exposure = size
 
-        return {
+        def _is_adjacent_bucket(pos: dict, low: float, high: float) -> bool:
+            pos_low = pos.get("bucket_low")
+            pos_high = pos.get("bucket_high")
+            if pos_low is None or pos_high is None:
+                return False
+            if low <= pos_high and pos_low <= high:
+                return True
+            return pos_high == low or pos_low == high
+
+        adjacent_exposure = sum(
+            m["position"].get("cost", 0.0)
+            for m in open_markets
+            if m.get("city") == city_slug and m.get("date") == date_str
+            and _is_adjacent_bucket(m["position"], t_low, t_high)
+        )
+        if adjacent_exposure + candidate_exposure > MAX_ADJACENT_BUCKET_EXPOSURE:
+            continue
+
+        if region_open_exposure + candidate_exposure > MAX_REGION_EXPOSURE:
+            continue
+
+        candidates.append({
             "market_id":     o["market_id"],
             "token_id":      o.get("token_id"),
             "question":      o["question"],
@@ -192,7 +255,11 @@ def evaluate_signal(
             "close_reason":  None,
             "closed_at":     None,
             "live_order_id": None,
-        }
+        })
 
+    if not candidates:
+        return None
 
-    return None
+    # Prefer highest EV candidate if malformed/overlapping market text yields
+    # multiple "matching" outcomes.
+    return max(candidates, key=lambda c: (c["ev"], c["p"], c["kelly"]))
