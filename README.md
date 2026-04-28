@@ -91,6 +91,10 @@ Create a `.env` file:
 VISUAL_CROSSING_KEY=your_key_here
 # For live trading:
 # POLYMARKET_PRIVATE_KEY=0x...
+# POLY_CLOB_HOST=https://clob-v2.polymarket.com
+# Optional (proxy/safe wallets via browser-connected accounts):
+# POLY_SIGNATURE_TYPE=0    # 0=EOA, 1=POLY_PROXY, 2=GNOSIS_SAFE
+# POLY_FUNDER=0x...        # required for signature types 1 or 2
 ```
 
 Configure trading parameters in `config.json`:
