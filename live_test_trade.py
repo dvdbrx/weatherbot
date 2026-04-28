@@ -18,7 +18,7 @@ load_dotenv()
 
 SDK_FLAVOR = "v1"
 try:
-    from py_clob_client_v2 import ClobClient, ApiCreds, OrderArgs, OrderType, PartialCreateOrderOptions, Side
+    from py_clob_client_v2 import ClobClient, ApiCreds, OrderArgs, OrderType, Side
     SDK_FLAVOR = "v2"
 except ImportError:
     from py_clob_client.client import ClobClient
@@ -162,13 +162,15 @@ print("  ✅ Signed")
 
 print("  Posting to CLOB...")
 try:
-    if hasattr(client, "create_and_post_order"):
-        resp = client.create_and_post_order(
-            order_args=order_args,
-            options=PartialCreateOrderOptions(order_type=OrderType.GTC),
-        )
+    if hasattr(client, "post_order"):
+        try:
+            resp = client.post_order(signed_order, OrderType.GTC)
+        except TypeError:
+            resp = client.post_order(order=signed_order, order_type=OrderType.GTC)
+    elif hasattr(client, "create_and_post_order"):
+        resp = client.create_and_post_order(order_args=order_args)
     else:
-        resp = client.post_order(signed_order, OrderType.GTC)
+        raise RuntimeError("No supported order submission method found on client.")
 except Exception as e:
     err_str = str(e)
     if "403" in err_str or "restricted" in err_str.lower() or "geoblock" in err_str.lower():
