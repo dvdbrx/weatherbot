@@ -112,18 +112,28 @@ def evaluate_signal(
         if not in_bucket(forecast_temp, t_low, t_high):
             continue
 
-        bid = o.get("bid", o["price"])
-        ask = o.get("ask", o["price"])
-        spread = o.get("spread", 0)
+        bid = o.get("bid")
+        ask = o.get("ask")
+        spread = o.get("spread")
+        tradable_price = o["price"]
+
+        # Defensive quote handling:
+        # - If only one side is available, use it as tradable price.
+        # - If no side is available, fall back to "price" and treat spread as unknown.
+        if ask is None:
+            ask = bid if bid is not None else tradable_price
+        if bid is None:
+            bid = ask if ask is not None else tradable_price
 
         # Slippage filter
-        if spread > MAX_SLIPPAGE:
+        if spread is not None and spread > MAX_SLIPPAGE:
             continue
         if ask >= MAX_PRICE or volume < MIN_VOLUME:
             continue
 
         # Sandbagging: worsen the ask price to be conservative
-        sandbagged_ask = min(ask + SANDBAG_SLIPPAGE + (spread * 0.5), MAX_SANDBAGGED_PRICE)
+        spread_penalty = (spread * 0.5) if spread is not None else 0.0
+        sandbagged_ask = min(ask + SANDBAG_SLIPPAGE + spread_penalty, MAX_SANDBAGGED_PRICE)
 
         p = bucket_prob(forecast_temp, t_low, t_high, sigma)
         ev = calc_ev(p, sandbagged_ask)
@@ -166,7 +176,7 @@ def evaluate_signal(
             "entry_price":   round(sandbagged_ask, 4),
             "ask_at_entry":  round(ask, 4),          # actual market ask for FOK execution
             "bid_at_entry":  bid,
-            "spread":        spread,
+            "spread":        round(spread, 4) if spread is not None else None,
             "shares":        round(size / sandbagged_ask, 2),
             "cost":          size,
             "p":             round(p, 4),

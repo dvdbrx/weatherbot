@@ -212,7 +212,7 @@ def scan_and_update() -> tuple[int, int, int]:
 
                 if current_price is not None:
                     current_price = next(
-                        (o.get("bid", current_price) for o in outcomes
+                        ((o.get("bid") if o.get("bid") is not None else current_price) for o in outcomes
                          if o["market_id"] == pos["market_id"]),
                         current_price
                     )

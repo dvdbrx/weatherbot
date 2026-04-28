@@ -11,6 +11,65 @@ from config import RESOLUTION_WIN_THRESHOLD, RESOLUTION_LOSS_THRESHOLD
 from http_utils import get_json
 
 
+def _as_float(value) -> float | None:
+    """Best-effort float parsing."""
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_json_array(raw_value) -> list:
+    """Parse list-like Gamma fields that may arrive as JSON strings."""
+    if isinstance(raw_value, list):
+        return raw_value
+    if isinstance(raw_value, str):
+        try:
+            parsed = json.loads(raw_value)
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+    return []
+
+
+def _get_yes_side_quotes(market: dict) -> tuple[float | None, float | None, float | None]:
+    """Extract YES-side bid/ask/price from same-outcome fields (not YES/NO pair values)."""
+    # First preference: explicit YES quote fields.
+    bid = _as_float(market.get("yesBid"))
+    ask = _as_float(market.get("yesAsk"))
+    price = (
+        _as_float(market.get("yesPrice"))
+        or _as_float(market.get("lastTradePrice"))
+        or _as_float(market.get("lastPrice"))
+        or _as_float(market.get("price"))
+    )
+
+    # Fallbacks seen on Gamma payload variants.
+    if bid is None:
+        bid = _as_float(market.get("bestBid"))
+    if ask is None:
+        ask = _as_float(market.get("bestAsk"))
+
+    # Outcome-indexed bid/ask arrays where index 0 is YES.
+    bid_prices = _parse_json_array(market.get("outcomeBidPrices"))
+    ask_prices = _parse_json_array(market.get("outcomeAskPrices"))
+    if bid is None and bid_prices:
+        bid = _as_float(bid_prices[0])
+    if ask is None and ask_prices:
+        ask = _as_float(ask_prices[0])
+
+    # If no traded/last price exists, fall back to available side(s).
+    if price is None:
+        if bid is not None and ask is not None:
+            price = (bid + ask) / 2.0
+        else:
+            price = bid if bid is not None else ask
+
+    return bid, ask, price
+
+
 def get_polymarket_event(city_slug: str, month: str, day: int, year: int) -> dict | None:
     """Fetch event data from Polymarket Gamma API by slug."""
     slug = f"highest-temperature-in-{city_slug}-on-{month}-{day}-{year}"
@@ -107,7 +166,8 @@ def parse_outcomes(event: dict) -> list[dict]:
     """Parse all outcomes from a Polymarket event into a sorted list.
 
     Each outcome dict has: question, market_id, token_id, range, bid, ask,
-    price, spread, volume.
+    price, spread, volume. bid/ask/spread may be None if only partial quote
+    data exists on Gamma.
     """
     outcomes = []
     for market in event.get("markets", []):
@@ -117,11 +177,8 @@ def parse_outcomes(event: dict) -> list[dict]:
         rng = parse_temp_range(question)
         if not rng:
             continue
-        try:
-            prices = json.loads(market.get("outcomePrices", "[0.5,0.5]"))
-            bid = float(prices[0])
-            ask = float(prices[1]) if len(prices) > 1 else bid
-        except Exception:
+        bid, ask, price = _get_yes_side_quotes(market)
+        if price is None:
             continue
 
         clob_ids = market.get("clobTokenIds")
@@ -136,10 +193,10 @@ def parse_outcomes(event: dict) -> list[dict]:
             "market_id": mid,
             "token_id":  token_id,
             "range":     rng,
-            "bid":       round(bid, 4),
-            "ask":       round(ask, 4),
-            "price":     round(bid, 4),
-            "spread":    round(ask - bid, 4),
+            "bid":       round(bid, 4) if bid is not None else None,
+            "ask":       round(ask, 4) if ask is not None else None,
+            "price":     round(price, 4),
+            "spread":    round(ask - bid, 4) if (bid is not None and ask is not None) else None,
             "volume":    round(volume, 0),
         })
 
@@ -154,5 +211,5 @@ def get_current_price(outcomes: list[dict], market_id: str) -> float | None:
     """
     for o in outcomes:
         if o["market_id"] == market_id:
-            return o.get("bid", o["price"])
+            return o.get("bid") if o.get("bid") is not None else o["price"]
     return None
