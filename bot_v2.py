@@ -65,7 +65,7 @@ if LIVE_TRADING:
         _init_state = load_state()
         if _init_state.get("starting_balance", 0) == 10000.0 or _init_state["balance"] == 10000.0:
             _real_bal = live_client.get_usdc_balance()
-            if _real_bal > 0:
+            if _real_bal is not None and _real_bal > 0:
                 _init_state["balance"]         = _real_bal
                 _init_state["starting_balance"] = _real_bal
                 _init_state["peak_balance"]     = _real_bal
@@ -132,8 +132,11 @@ def scan_and_update() -> tuple[int, int, int]:
 
     if LIVE_TRADING and live_client:
         live_balance = live_client.get_usdc_balance()
-        state["balance"] = live_balance
-        print(f"  [LIVE TRADING] Synced balance: ${live_balance:.2f}")
+        if live_balance is not None:
+            state["balance"] = live_balance
+            print(f"  [LIVE TRADING] Synced balance: ${live_balance:.2f}")
+        else:
+            print(f"  [LIVE TRADING] Balance read failed — using cached ${state['balance']:.2f}")
 
     balance = state["balance"]
     new_pos = 0
@@ -440,11 +443,13 @@ def print_status() -> None:
     if LIVE_TRADING and live_client:
         try:
             wallet_bal = live_client.get_usdc_balance()
-            print(f"  Wallet USDC: ${wallet_bal:,.2f}  (address: {live_client.trading_address[:10]}...)")
-            # Sync into state so scans start with the right value
-            state["balance"] = wallet_bal
-            save_state(state)
-            bal = wallet_bal
+            if wallet_bal is not None:
+                print(f"  Wallet USDC: ${wallet_bal:,.2f}  (address: {live_client.trading_address[:10]}...)")
+                state["balance"] = wallet_bal
+                save_state(state)
+                bal = wallet_bal
+            else:
+                print(f"  Wallet USDC: ⚠️  could not fetch (both methods failed)")
         except Exception as e:
             print(f"  Wallet USDC: ⚠️  could not fetch ({e})")
 

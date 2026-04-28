@@ -47,10 +47,12 @@ class PolymarketLiveClient:
         self.trading_address = self.client.get_address()
         self.collateral_address = self.client.get_collateral_address()
 
-    def get_usdc_balance(self) -> float:
+    def get_usdc_balance(self) -> float | None:
         """Returns the USDC collateral balance available for trading.
         Uses the CLOB API authenticated balance endpoint (primary),
         with on-chain RPC fallback.
+        Returns None if both methods fail so callers can skip the sync
+        rather than stamping $0.00 into state.
         """
         # Method 1: CLOB API balance/allowance endpoint (authenticated)
         try:
@@ -60,8 +62,8 @@ class PolymarketLiveClient:
             if "balance" in res:
                 bal = float(res["balance"]) / 1e6
                 return bal
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning(f"Balance method 1 (CLOB API) failed: {e}")
 
         # Method 2: Direct RPC read of USDC.e on Polygon (EOA fallback)
         try:
@@ -75,10 +77,10 @@ class PolymarketLiveClient:
             r = requests.post(POLYGON_RPC_URL, json=payload, timeout=5).json()
             if 'result' in r and r['result'] != '0x':
                 return int(r['result'], 16) / 1e6
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning(f"Balance method 2 (RPC fallback) failed: {e}")
 
-        return 0.0
+        return None
 
     def get_open_positions(self) -> list:
         """Returns a list of open and pending orders."""
