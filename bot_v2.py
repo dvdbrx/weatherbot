@@ -197,7 +197,7 @@ def _set_state_desync(state: dict, active: bool, reasons: list[str]) -> None:
             state["halt_reason"] = None
 
 
-def reconcile_live_state(state: dict) -> tuple[bool, list[str]]:
+def reconcile_live_state(state: dict, markets: list[dict] | None = None) -> tuple[bool, list[str]]:
     """Compare local open positions vs. CLOB wallet exposure and flag desync."""
     was_desynced = bool(state.get("state_desync"))
     if not (LIVE_TRADING and live_client):
@@ -213,7 +213,8 @@ def reconcile_live_state(state: dict) -> tuple[bool, list[str]]:
 
     local_open_tokens: set[str] = set()
     known_local_tokens: set[str] = set()
-    for mkt in load_all_markets():
+    market_rows = markets if markets is not None else load_all_markets()
+    for mkt in market_rows:
         pos = mkt.get("position")
         if not (pos and pos.get("token_id")):
             continue
@@ -298,7 +299,7 @@ def scan_and_update() -> tuple[int, int, int]:
     state["equity"] = calculate_equity(state, markets)
     state["peak_equity"] = max(state.get("peak_equity", state["equity"]), state["equity"])
 
-    desync, _ = reconcile_live_state(state)
+    desync, _ = reconcile_live_state(state, markets)
     if desync:
         save_state(state)
         return 0, 0, 0
@@ -332,6 +333,7 @@ def scan_and_update() -> tuple[int, int, int]:
     for city_slug, loc in LOCATIONS.items():
         unit = loc["unit"]
         unit_sym = "F" if unit == "F" else "C"
+        dirty_markets: dict[str, dict] = {}
         print(f"  -> {loc['name']}...", end=" ", flush=True)
 
         try:
@@ -402,10 +404,6 @@ def scan_and_update() -> tuple[int, int, int]:
                     )
                     if actionable_price is not None:
                         current_price = actionable_price
-                        result = check_stop_loss(pos, current_price, pos["entry_price"])
-
-                        if result and not result.get("trailing_only"):
-                            _execute_sell(pos, current_price, result["close_reason"])
                     result = check_stop_loss(pos, current_price, pos["entry_price"])
 
                     if result and not result.get("trailing_only"):
@@ -444,7 +442,6 @@ def scan_and_update() -> tuple[int, int, int]:
                         )
                         if actionable_price is not None:
                             current_price = actionable_price
-                            _execute_sell(pos, current_price, "Forecast Shift")
                         sell_status = _execute_sell(pos, current_price, "Forecast Shift")
                         if sell_status["success"]:
                             pos.pop("pending_exit_retry", None)
@@ -535,8 +532,11 @@ def scan_and_update() -> tuple[int, int, int]:
             if hours < 0.5 and mkt["status"] == "open":
                 mkt["status"] = "closed"
 
-            save_market(mkt)
-            time.sleep(0.1)
+            dirty_markets[f"{mkt['city']}::{mkt['date']}"] = mkt
+
+        for dirty_mkt in dirty_markets.values():
+            save_market(dirty_mkt)
+            time.sleep(0.03)
 
         print("ok")
 
@@ -616,11 +616,11 @@ def scan_and_update() -> tuple[int, int, int]:
 def monitor_positions() -> int:
     """Quick stop check on open positions without full scan."""
     state = load_state()
-    reconcile_live_state(state)
+    all_mkts = load_all_markets()
+    reconcile_live_state(state, all_mkts)
     save_state(state)
 
-    markets = load_all_markets()
-    open_pos = [m for m in markets if m.get("position") and m["position"].get("status") == "open"]
+    open_pos = [m for m in all_mkts if m.get("position") and m["position"].get("status") == "open"]
     if not open_pos:
         return 0
 
