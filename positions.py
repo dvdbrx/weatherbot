@@ -109,9 +109,6 @@ def evaluate_signal(
         price = o["price"]
         volume = o["volume"]
 
-        if not in_bucket(forecast_temp, t_low, t_high):
-            continue
-
         bid = o.get("bid")
         ask = o.get("ask")
         spread = o.get("spread")
