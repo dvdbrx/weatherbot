@@ -15,6 +15,7 @@ Usage:
 import sys
 import os
 import time
+import json
 import requests
 from datetime import datetime, timezone, timedelta
 
@@ -24,6 +25,7 @@ from config import (
     MAX_BET, MIN_HOURS, MAX_HOURS, CALIBRATION_MIN,
     STOP_LOSS_PCT, TRAILING_ACTIVATION_PCT,
     DAILY_SPEND_LIMIT, MAX_DRAWDOWN_PCT, MAX_DAILY_LOSSES,
+    QUOTE_MAX_AGE_SECONDS,
     validate_data_dir, DATA_DIR, CALIBRATION_FILE,
 )
 from math_utils import in_bucket
@@ -101,6 +103,72 @@ def _execute_sell(pos: dict, current_price: float, reason_label: str) -> None:
         resp = live_client.place_order(pos["token_id"], "SELL", current_price, pos["shares"])
         if not (resp and resp.get("success")):
             print(f"  [LIVE] SELL failed: {resp}")
+
+
+
+def _parse_iso_ts(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _log_skip_warning(reason: str, details: dict) -> None:
+    print(json.dumps({
+        "level": "warning",
+        "event": "skip_trade_action",
+        "reason": reason,
+        **details,
+    }, sort_keys=True))
+
+
+def _get_actionable_market_quote(
+    outcomes: list[dict],
+    market_id: str,
+    snap_ts: str | None,
+    action: str,
+) -> tuple[float | None, dict | None]:
+    outcome = next((o for o in outcomes if o.get("market_id") == market_id), None)
+    if not outcome:
+        _log_skip_warning("missing_market_outcome", {
+            "market_id": market_id,
+            "snapshot_ts": snap_ts,
+            "action": action,
+        })
+        return None, None
+
+    bid = outcome.get("bid")
+    ask = outcome.get("ask")
+    meta = {
+        "market_id": market_id,
+        "snapshot_ts": snap_ts,
+        "quote_ts": outcome.get("quote_ts"),
+        "bid": bid,
+        "ask": ask,
+        "max_age_seconds": QUOTE_MAX_AGE_SECONDS,
+        "action": action,
+    }
+
+    if bid is None or ask is None:
+        _log_skip_warning("missing_bid_ask", meta)
+        return None, outcome
+    if not (0 < bid <= ask < 1):
+        _log_skip_warning("invalid_bid_ask", meta)
+        return None, outcome
+
+    if snap_ts and outcome.get("quote_ts"):
+        snap_dt = _parse_iso_ts(snap_ts)
+        quote_dt = _parse_iso_ts(outcome.get("quote_ts"))
+        if snap_dt and quote_dt:
+            age_seconds = (snap_dt - quote_dt).total_seconds()
+            meta["quote_age_seconds"] = round(age_seconds, 2)
+            if age_seconds > QUOTE_MAX_AGE_SECONDS:
+                _log_skip_warning("stale_quote", meta)
+                return None, outcome
+
+    return bid, outcome
 
 # =============================================================================
 # CORE: SCAN AND UPDATE
@@ -211,24 +279,24 @@ def scan_and_update() -> tuple[int, int, int]:
                 current_price = get_current_price(outcomes, pos["market_id"])
 
                 if current_price is not None:
-                    current_price = next(
-                        ((o.get("bid") if o.get("bid") is not None else current_price) for o in outcomes
-                         if o["market_id"] == pos["market_id"]),
-                        current_price
+                    actionable_price, _ = _get_actionable_market_quote(
+                        outcomes, pos["market_id"], snap.get("ts"), "close_stop_loss"
                     )
-                    result = check_stop_loss(pos, current_price, pos["entry_price"])
+                    if actionable_price is not None:
+                        current_price = actionable_price
+                        result = check_stop_loss(pos, current_price, pos["entry_price"])
 
-                    if result and not result.get("trailing_only"):
-                        _execute_sell(pos, current_price, result["close_reason"])
-                        pnl = _close_position(pos, current_price, result["close_reason"], snap.get("ts"))
-                        balance += pos["cost"] + pnl
-                        closed += 1
-                        print(f"  [{result['label']}] {loc['name']} {date} | "
-                              f"entry ${pos['entry_price']:.3f} exit ${current_price:.3f} | "
-                              f"PnL: {'+'if pnl>=0 else ''}{pnl:.2f}")
-                    elif result and result.get("trailing_only"):
-                        pos["stop_price"] = result["stop_price"]
-                        pos["trailing_activated"] = True
+                        if result and not result.get("trailing_only"):
+                            _execute_sell(pos, current_price, result["close_reason"])
+                            pnl = _close_position(pos, current_price, result["close_reason"], snap.get("ts"))
+                            balance += pos["cost"] + pnl
+                            closed += 1
+                            print(f"  [{result['label']}] {loc['name']} {date} | "
+                                  f"entry ${pos['entry_price']:.3f} exit ${current_price:.3f} | "
+                                  f"PnL: {'+'if pnl>=0 else ''}{pnl:.2f}")
+                        elif result and result.get("trailing_only"):
+                            pos["stop_price"] = result["stop_price"]
+                            pos["trailing_activated"] = True
 
             # --- CLOSE POSITION if forecast shifted ---
             if (mkt.get("position") and mkt["position"].get("status") == "open"
@@ -237,12 +305,17 @@ def scan_and_update() -> tuple[int, int, int]:
                 if check_forecast_shift(pos, forecast_temp, loc):
                     current_price = get_current_price(outcomes, pos["market_id"])
                     if current_price is not None:
-                        _execute_sell(pos, current_price, "Forecast Shift")
-                        pnl = _close_position(pos, current_price, "forecast_changed", snap.get("ts"))
-                        balance += pos["cost"] + pnl
-                        closed += 1
-                        print(f"  [CLOSE] {loc['name']} {date} — forecast changed | "
-                              f"PnL: {'+'if pnl>=0 else ''}{pnl:.2f}")
+                        actionable_price, _ = _get_actionable_market_quote(
+                            outcomes, pos["market_id"], snap.get("ts"), "close_forecast_shift"
+                        )
+                        if actionable_price is not None:
+                            current_price = actionable_price
+                            _execute_sell(pos, current_price, "Forecast Shift")
+                            pnl = _close_position(pos, current_price, "forecast_changed", snap.get("ts"))
+                            balance += pos["cost"] + pnl
+                            closed += 1
+                            print(f"  [CLOSE] {loc['name']} {date} — forecast changed | "
+                                  f"PnL: {'+'if pnl>=0 else ''}{pnl:.2f}")
 
             # --- OPEN POSITION ---
             if not mkt.get("position") and forecast_temp is not None and hours >= MIN_HOURS:
