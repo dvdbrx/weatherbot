@@ -12,6 +12,8 @@ from config import (
     STOP_LOSS_PCT, TRAILING_ACTIVATION_PCT,
     MIN_BET_SIZE, MAX_SANDBAGGED_PRICE,
     LIVE_TRADING, DAILY_SPEND_LIMIT,
+    MAX_POSITIONS_PER_CITY, MAX_POSITIONS_PER_DATE,
+    MAX_REGION_EXPOSURE, MAX_ADJACENT_BUCKET_EXPOSURE,
 )
 from math_utils import bucket_prob, calc_ev, calc_kelly, bet_size, in_bucket
 from polymarket_api import get_current_price
@@ -91,6 +93,7 @@ def evaluate_signal(
     forecast_temp: float,
     best_source: str | None,
     city_slug: str,
+    date_str: str,
     cal: dict,
     balance: float,
     snap_ts: str | None,
@@ -103,6 +106,28 @@ def evaluate_signal(
     Returns None immediately if any risk guard (daily spend, etc.) would be breached.
     """
     sigma = get_sigma(cal, city_slug, best_source or "ecmwf")
+    all_markets = load_all_markets()
+    open_markets = [
+        m for m in all_markets
+        if m.get("position") and m["position"].get("status") == "open"
+    ]
+
+    city_open_count = sum(1 for m in open_markets if m.get("city") == city_slug)
+    if city_open_count >= MAX_POSITIONS_PER_CITY:
+        return None
+
+    date_open_count = sum(1 for m in open_markets if m.get("date") == date_str)
+    if date_open_count >= MAX_POSITIONS_PER_DATE:
+        return None
+
+    city_region = LOCATIONS[city_slug]["region"]
+    region_open_exposure = sum(
+        m["position"].get("cost", 0.0)
+        for m in open_markets
+        if LOCATIONS.get(m.get("city", ""), {}).get("region") == city_region
+    )
+    if region_open_exposure >= MAX_REGION_EXPOSURE:
+        return None
 
     candidates: list[dict] = []
 
@@ -167,6 +192,28 @@ def evaluate_signal(
             size = min(size, budget_left)
 
         if size < MIN_BET_SIZE:
+            continue
+        candidate_exposure = size
+
+        def _is_adjacent_bucket(pos: dict, low: float, high: float) -> bool:
+            pos_low = pos.get("bucket_low")
+            pos_high = pos.get("bucket_high")
+            if pos_low is None or pos_high is None:
+                return False
+            if low <= pos_high and pos_low <= high:
+                return True
+            return pos_high == low or pos_low == high
+
+        adjacent_exposure = sum(
+            m["position"].get("cost", 0.0)
+            for m in open_markets
+            if m.get("city") == city_slug and m.get("date") == date_str
+            and _is_adjacent_bucket(m["position"], t_low, t_high)
+        )
+        if adjacent_exposure + candidate_exposure > MAX_ADJACENT_BUCKET_EXPOSURE:
+            continue
+
+        if region_open_exposure + candidate_exposure > MAX_REGION_EXPOSURE:
             continue
 
         candidates.append({
