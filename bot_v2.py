@@ -132,7 +132,7 @@ def scan_and_update() -> tuple[int, int, int]:
 
     if LIVE_TRADING and live_client:
         live_balance = live_client.get_usdc_balance()
-        if live_balance is not None:
+        if live_balance:
             state["balance"] = live_balance
             print(f"  [LIVE TRADING] Synced balance: ${live_balance:.2f}")
         else:
@@ -443,13 +443,13 @@ def print_status() -> None:
     if LIVE_TRADING and live_client:
         try:
             wallet_bal = live_client.get_usdc_balance()
-            if wallet_bal is not None:
+            if wallet_bal:
                 print(f"  Wallet USDC: ${wallet_bal:,.2f}  (address: {live_client.trading_address[:10]}...)")
                 state["balance"] = wallet_bal
                 save_state(state)
                 bal = wallet_bal
             else:
-                print(f"  Wallet USDC: ⚠️  could not fetch (both methods failed)")
+                print(f"  Wallet USDC: ⚠️  could not fetch (both methods failed or returned $0)")
         except Exception as e:
             print(f"  Wallet USDC: ⚠️  could not fetch ({e})")
 
