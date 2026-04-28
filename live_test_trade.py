@@ -11,6 +11,7 @@ import os
 import json
 import time
 import requests
+from importlib import metadata
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -40,7 +41,26 @@ else:
 
 # ── Initialize CLOB client ───────────────────────────────────────────
 print("\n=== Initializing ===")
-client = ClobClient('https://clob.polymarket.com', key=pk, chain_id=137)
+try:
+    v2 = metadata.version("py-clob-client-v2")
+    print(f"✅ py-clob-client-v2 detected: {v2}")
+except metadata.PackageNotFoundError:
+    print("⚠️  py-clob-client-v2 not installed. Order posting may fail on CLOB V2.")
+    print("   Fix: pip install -U py-clob-client-v2")
+
+signature_type = int(os.getenv("POLY_SIGNATURE_TYPE", "0"))
+funder = os.getenv("POLY_FUNDER") or None
+if signature_type in (1, 2) and not funder:
+    print(f"⚠️  POLY_SIGNATURE_TYPE={signature_type} but POLY_FUNDER is empty.")
+    print("   If this is a proxy/safe wallet, set POLY_FUNDER=0x...")
+
+client = ClobClient(
+    'https://clob.polymarket.com',
+    key=pk,
+    chain_id=137,
+    signature_type=signature_type,
+    funder=funder,
+)
 creds = client.create_or_derive_api_creds()
 if isinstance(creds, dict):
     creds = ApiCreds(**creds)

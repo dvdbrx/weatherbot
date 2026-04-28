@@ -6,6 +6,7 @@ Wraps py-clob-client for order execution, balance checks, and order management.
 import os
 import logging
 import requests
+from importlib import metadata
 from decimal import Decimal, ROUND_DOWN
 from datetime import datetime, timezone
 from py_clob_client.client import ClobClient
@@ -38,7 +39,31 @@ class PolymarketLiveClient:
         elif self.proxy_configured:
             log.info(f"✅ Proxy configured: {os.environ.get('HTTPS_PROXY', 'via HTTP_PROXY')}")
 
-        self.client = ClobClient(host, key=self.private_key, chain_id=chain_id)
+        sdk_v2 = None
+        try:
+            sdk_v2 = metadata.version("py-clob-client-v2")
+        except metadata.PackageNotFoundError:
+            log.warning("⚠️  py-clob-client-v2 not installed. CLOB V2 order posting may fail.")
+            log.warning("   Fix: pip install -U py-clob-client-v2")
+
+        signature_type = int(os.getenv("POLY_SIGNATURE_TYPE", "0"))
+        funder = os.getenv("POLY_FUNDER") or None
+        if signature_type in (1, 2) and not funder:
+            log.warning(
+                "⚠️  POLY_SIGNATURE_TYPE=%s but POLY_FUNDER is empty. "
+                "If this wallet is a proxy/safe account, set POLY_FUNDER=0x...",
+                signature_type
+            )
+        if sdk_v2:
+            log.info("✅ py-clob-client-v2 detected: %s", sdk_v2)
+
+        self.client = ClobClient(
+            host,
+            key=self.private_key,
+            chain_id=chain_id,
+            signature_type=signature_type,
+            funder=funder,
+        )
 
         creds = self.client.create_or_derive_api_creds()
         if isinstance(creds, dict):
