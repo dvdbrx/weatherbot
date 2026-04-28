@@ -205,20 +205,28 @@ def reconcile_live_state(state: dict) -> tuple[bool, list[str]]:
             _set_state_desync(state, False, [])
         return False, []
 
+    def _fmt_tokens(tokens: list[str], limit: int = 5) -> str:
+        if len(tokens) <= limit:
+            return str(tokens)
+        head = tokens[:limit]
+        return f"{head} ... (+{len(tokens) - limit} more)"
+
     local_open_tokens: set[str] = set()
+    known_local_tokens: set[str] = set()
     for mkt in load_all_markets():
         pos = mkt.get("position")
-        if pos and pos.get("status") == "open" and pos.get("token_id"):
-            local_open_tokens.add(str(pos["token_id"]))
+        if not (pos and pos.get("token_id")):
+            continue
+        token_id = str(pos["token_id"])
+        known_local_tokens.add(token_id)
+        if pos.get("status") == "open":
+            local_open_tokens.add(token_id)
 
     exposure = live_client.get_wallet_exposure()
     filled_by_token = exposure.get("filled_by_token", {})
     pending_by_token = exposure.get("pending_by_token", {})
 
-    wallet_exposed_tokens = {
-        token for token, qty in filled_by_token.items()
-        if qty > 0.01
-    }
+    wallet_exposed_tokens = {token for token, qty in filled_by_token.items() if qty > 0.01}
     wallet_pending_tokens = {
         token for token, qty in pending_by_token.items()
         if abs(qty) > 0.01
@@ -226,16 +234,26 @@ def reconcile_live_state(state: dict) -> tuple[bool, list[str]]:
 
     reasons: list[str] = []
 
-    wallet_only = sorted(wallet_exposed_tokens - local_open_tokens)
+    # Only treat exposures for locally-known tokens as desync blockers.
+    # Wallet may contain unrelated legacy/manual positions that this bot does not own.
+    relevant_wallet_exposure = wallet_exposed_tokens & known_local_tokens
+    wallet_only = sorted(relevant_wallet_exposure - local_open_tokens)
     if wallet_only:
-        reasons.append(f"wallet exposed but local position closed/missing: {wallet_only}")
+        reasons.append(
+            "wallet exposed but local position closed/missing: "
+            f"{_fmt_tokens(wallet_only)}"
+        )
 
     local_only = sorted(local_open_tokens - wallet_exposed_tokens)
     if local_only:
-        reasons.append(f"local position open but wallet exposure missing: {local_only}")
+        reasons.append(
+            "local position open but wallet exposure missing: "
+            f"{_fmt_tokens(local_only)}"
+        )
 
-    if wallet_pending_tokens:
-        reasons.append(f"wallet has open/pending orders: {sorted(wallet_pending_tokens)}")
+    relevant_pending = sorted(wallet_pending_tokens & known_local_tokens)
+    if relevant_pending:
+        reasons.append(f"wallet has open/pending orders: {_fmt_tokens(relevant_pending)}")
 
     desync = len(reasons) > 0
     _set_state_desync(state, desync, reasons)
