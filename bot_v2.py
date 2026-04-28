@@ -386,8 +386,33 @@ def monitor_positions() -> int:
     for mkt in open_pos:
         pos = mkt["position"]
         mid = pos["market_id"]
+        ts = datetime.now(timezone.utc).isoformat()
 
-        current_price = get_current_price(mkt.get("all_outcomes", []), mid)
+        # Refresh outcomes from Gamma so stop checks use live prices.
+        current_price = None
+        date_obj = datetime.strptime(mkt["date"], "%Y-%m-%d")
+        event = get_polymarket_event(
+            mkt["city"],
+            MONTHS[date_obj.month - 1],
+            date_obj.day,
+            date_obj.year,
+        )
+        if event:
+            outcomes = parse_outcomes(event)
+            if outcomes:
+                mkt["all_outcomes"] = outcomes
+                top = max(outcomes, key=lambda x: x["price"])
+                mkt.setdefault("market_snapshots", [])
+                mkt["market_snapshots"].append({
+                    "ts": ts,
+                    "top_bucket": f"{top['range'][0]}-{top['range'][1]}{mkt['unit']}",
+                    "top_price": top["price"],
+                })
+                current_price = get_current_price(outcomes, mid)
+
+        # Fallback: fetch direct market price if event refresh failed.
+        if current_price is None:
+            current_price = get_current_price(mkt.get("all_outcomes", []), mid)
         if current_price is None:
             continue
 
@@ -397,7 +422,7 @@ def monitor_positions() -> int:
         if result and not result.get("trailing_only"):
             _execute_sell(pos, current_price, result["close_reason"])
             pnl = _close_position(pos, current_price, result["close_reason"],
-                                  datetime.now(timezone.utc).isoformat())
+                                  ts)
             balance += pos["cost"] + pnl
             closed += 1
             city_name = LOCATIONS.get(mkt["city"], {}).get("name", mkt["city"])
