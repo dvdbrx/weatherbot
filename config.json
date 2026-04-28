@@ -11,6 +11,7 @@
   "calibration_min": 30,
   "max_slippage": 0.05,
   "sandbag_slippage": 0.03,
+  "quote_max_age_seconds": 90,
   "daily_spend_limit": 5.0,
   "max_drawdown_pct": 0.3,
   "max_daily_losses": 3,

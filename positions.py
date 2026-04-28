@@ -12,11 +12,13 @@ from config import (
     STOP_LOSS_PCT, TRAILING_ACTIVATION_PCT,
     MIN_BET_SIZE, MAX_SANDBAGGED_PRICE,
     LIVE_TRADING, DAILY_SPEND_LIMIT,
+    QUOTE_MAX_AGE_SECONDS,
     MAX_POSITIONS_PER_CITY, MAX_POSITIONS_PER_DATE,
     MAX_REGION_EXPOSURE, MAX_ADJACENT_BUCKET_EXPOSURE,
 )
 from math_utils import bucket_prob, calc_ev, calc_kelly, bet_size, in_bucket
 from polymarket_api import get_current_price
+from quote_utils import guard_quote_for_action, log_skip_trade_action
 from storage import load_all_markets, get_sigma
 
 
@@ -155,6 +157,18 @@ def evaluate_signal(
             ask = bid if bid is not None else tradable_price
         if bid is None:
             bid = ask if ask is not None else tradable_price
+
+        quote_ok, quote_reason, quote_meta = guard_quote_for_action(
+            bid=o.get("bid"),
+            ask=o.get("ask"),
+            quote_ts=o.get("quote_ts"),
+            snapshot_ts=snap_ts,
+            max_age_seconds=QUOTE_MAX_AGE_SECONDS,
+        )
+        quote_meta["market_id"] = o.get("market_id")
+        if not quote_ok:
+            log_skip_trade_action(quote_reason, quote_meta)
+            continue
 
         # Slippage filter
         if spread is not None and spread > MAX_SLIPPAGE:

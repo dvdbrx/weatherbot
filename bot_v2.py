@@ -24,6 +24,7 @@ from config import (
     MAX_BET, MIN_HOURS, MAX_HOURS, CALIBRATION_MIN,
     STOP_LOSS_PCT, TRAILING_ACTIVATION_PCT,
     DAILY_SPEND_LIMIT, MAX_DRAWDOWN_PCT, MAX_DAILY_LOSSES,
+    QUOTE_MAX_AGE_SECONDS,
     validate_data_dir, DATA_DIR, CALIBRATION_FILE,
 )
 from math_utils import in_bucket
@@ -32,6 +33,7 @@ from polymarket_api import (
     get_polymarket_event, check_market_resolved,
     hours_to_resolution, parse_outcomes, get_current_price,
 )
+from quote_utils import guard_quote_for_action, log_skip_trade_action
 from storage import (
     load_state, save_state,
     load_market, save_market, load_all_markets,
@@ -134,6 +136,49 @@ def _mark_pending_exit_retry(mkt: dict, pos: dict, reason: str, current_price: f
         f"token={pos.get('token_id')} order_id={order_id} "
         f"reason={reason} error={error}"
     )
+
+
+
+def _get_actionable_market_quote(
+    outcomes: list[dict],
+    market_id: str,
+    snap_ts: str | None,
+    action: str,
+) -> tuple[float | None, dict | None]:
+    outcome = next((o for o in outcomes if o.get("market_id") == market_id), None)
+    if not outcome:
+        log_skip_trade_action("missing_market_outcome", {
+            "market_id": market_id,
+            "snapshot_ts": snap_ts,
+            "action": action,
+        })
+        return None, None
+
+    bid = outcome.get("bid")
+    ask = outcome.get("ask")
+    meta = {
+        "market_id": market_id,
+        "snapshot_ts": snap_ts,
+        "quote_ts": outcome.get("quote_ts"),
+        "bid": bid,
+        "ask": ask,
+        "max_age_seconds": QUOTE_MAX_AGE_SECONDS,
+        "action": action,
+    }
+
+    quote_ok, quote_reason, quote_meta = guard_quote_for_action(
+        bid=bid,
+        ask=ask,
+        quote_ts=outcome.get("quote_ts"),
+        snapshot_ts=snap_ts,
+        max_age_seconds=QUOTE_MAX_AGE_SECONDS,
+    )
+    quote_meta.update({"market_id": market_id, "action": action})
+    if not quote_ok:
+        log_skip_trade_action(quote_reason, quote_meta)
+        return None, outcome
+
+    return bid, outcome
 
 # =============================================================================
 # CORE: SCAN AND UPDATE
@@ -249,11 +294,15 @@ def scan_and_update() -> tuple[int, int, int]:
                 current_price = get_current_price(outcomes, pos["market_id"])
 
                 if current_price is not None:
-                    current_price = next(
-                        ((o.get("bid") if o.get("bid") is not None else current_price) for o in outcomes
-                         if o["market_id"] == pos["market_id"]),
-                        current_price
+                    actionable_price, _ = _get_actionable_market_quote(
+                        outcomes, pos["market_id"], snap.get("ts"), "close_stop_loss"
                     )
+                    if actionable_price is not None:
+                        current_price = actionable_price
+                        result = check_stop_loss(pos, current_price, pos["entry_price"])
+
+                        if result and not result.get("trailing_only"):
+                            _execute_sell(pos, current_price, result["close_reason"])
                     result = check_stop_loss(pos, current_price, pos["entry_price"])
 
                     if result and not result.get("trailing_only"):
@@ -271,6 +320,9 @@ def scan_and_update() -> tuple[int, int, int]:
                             print(f"  [{result['label']}] {loc['name']} {date} | "
                                   f"entry ${pos['entry_price']:.3f} exit ${current_price:.3f} | "
                                   f"PnL: {'+'if pnl>=0 else ''}{pnl:.2f}")
+                        elif result and result.get("trailing_only"):
+                            pos["stop_price"] = result["stop_price"]
+                            pos["trailing_activated"] = True
                         else:
                             _mark_pending_exit_retry(mkt, pos, result["close_reason"], current_price, sell_status, snap.get("ts"))
                     elif result and result.get("trailing_only"):
@@ -284,6 +336,12 @@ def scan_and_update() -> tuple[int, int, int]:
                 if check_forecast_shift(pos, forecast_temp, loc):
                     current_price = get_current_price(outcomes, pos["market_id"])
                     if current_price is not None:
+                        actionable_price, _ = _get_actionable_market_quote(
+                            outcomes, pos["market_id"], snap.get("ts"), "close_forecast_shift"
+                        )
+                        if actionable_price is not None:
+                            current_price = actionable_price
+                            _execute_sell(pos, current_price, "Forecast Shift")
                         sell_status = _execute_sell(pos, current_price, "Forecast Shift")
                         if sell_status["success"]:
                             pos.pop("pending_exit_retry", None)
