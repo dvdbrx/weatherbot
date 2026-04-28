@@ -259,6 +259,12 @@ def scan_and_update() -> tuple[int, int, int]:
                             fok_shares = round(signal["cost"] / fok_price, 2)
                             bal_before = live_client.get_usdc_balance()
 
+                            if bal_before is None:
+                                print("  [LIVE] ⚠️ Unable to confirm fill: wallet balance unavailable before order. "
+                                      "Skipping trade attempt.")
+                                signal = None
+                                continue
+
                             print(f"  [LIVE] FOK BUY {fok_shares} shares @ ${fok_price:.3f} "
                                   f"| expected cost ${signal['cost']:.2f} "
                                   f"| wallet before ${bal_before:.2f}")

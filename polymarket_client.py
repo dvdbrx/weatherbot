@@ -169,6 +169,9 @@ class PolymarketLiveClient:
         for _ in range(retries):
             time.sleep(delay)
             bal_after = self.get_usdc_balance()
+            if bal_after is None:
+                log.warning("Fill confirmation retry skipped: wallet balance unavailable.")
+                continue
             spent = round(bal_before - bal_after, 6)
             if spent > 0.001:   # balance actually decreased
                 return True, spent
