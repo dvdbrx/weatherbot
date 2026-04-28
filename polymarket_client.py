@@ -6,6 +6,7 @@ Wraps py-clob-client for order execution, balance checks, and order management.
 import os
 import logging
 import requests
+from decimal import Decimal, ROUND_DOWN
 from datetime import datetime, timezone
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import ApiCreds, OrderArgs, OrderType, BalanceAllowanceParams, AssetType
@@ -92,25 +93,32 @@ class PolymarketLiveClient:
 
     @staticmethod
     def _sanitize(price: float, size: float) -> tuple[float, float]:
-        """Enforce Polymarket CLOB precision rules before order creation.
+        """Enforce CLOB precision with explicit quantization and validation.
 
-        The CLOB enforces:
-          - maker amount (shares): max 2 decimal places
-          - taker amount (USDC):   max 4 decimal places
-          - price:                 max 2 decimal places (cent grid)
+        Quantization rules:
+          - price:  2 decimal places
+          - shares: 2 decimal places
+          - taker amount / cost (price * shares): max 4 decimal places
 
-        Rounding price first, then re-deriving size from the rounded price
-        ensures the implied USDC cost (size * price) also stays within 4dp.
-        We floor shares slightly (rather than round) to avoid overshooting the
-        intended $ spend.
+        Validation checks are done on unrounded intermediate values. If the
+        quantized values still imply a taker amount with >4 decimals, reduce
+        shares in 0.01 steps (while > 0) until constraints are satisfied.
         """
-        price = round(price, 2)
-        size  = round(size,  2)
-        # Verify implied USDC cost fits within 4dp; if not, trim size by 0.01
-        implied_cost = round(size * price, 4)
-        if round(implied_cost, 4) != implied_cost:
-            size = round(size - 0.01, 2)
-        return price, size
+        cent = Decimal("0.01")
+        ten_thousandth = Decimal("0.0001")
+
+        # Explicit quantization to CLOB-supported grids.
+        q_price = Decimal(str(price)).quantize(cent, rounding=ROUND_DOWN)
+        q_size = Decimal(str(size)).quantize(cent, rounding=ROUND_DOWN)
+
+        # Ensure cost precision constraints hold using unrounded multiplication.
+        while q_size > 0:
+            raw_cost = q_price * q_size
+            if raw_cost == raw_cost.quantize(ten_thousandth, rounding=ROUND_DOWN):
+                return float(q_price), float(q_size)
+            q_size = (q_size - cent).quantize(cent, rounding=ROUND_DOWN)
+
+        return float(q_price), 0.0
 
     def place_order(self, token_id: str, side: str, price: float, size: float) -> dict | None:
         """Places a GTC limit order. Use place_order_fok() for live fills."""
