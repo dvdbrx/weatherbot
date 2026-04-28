@@ -106,12 +106,33 @@ print(f"   YES price: {target['yes']:.4f}")
 # ── Check orderbook ───────────────────────────────────────────────────
 print("\n=== Checking orderbook ===")
 book = client.get_order_book(target['tid'])
-if not book or not book.bids or not book.asks:
+
+if isinstance(book, dict):
+    bids = book.get("bids") or []
+    asks = book.get("asks") or []
+else:
+    bids = getattr(book, "bids", []) or []
+    asks = getattr(book, "asks", []) or []
+
+if not bids or not asks:
     print("❌ No orderbook. Market may be closed/illiquid.")
     exit(1)
 
-bid = float(book.bids[0].price)
-ask = float(book.asks[0].price)
+def _price(level):
+    if hasattr(level, "price"):
+        return float(level.price)
+    if isinstance(level, dict):
+        value = level.get("price")
+        if value is None:
+            value = level.get("px")
+        if value is None:
+            value = level.get("p")
+        if value is not None:
+            return float(value)
+    raise ValueError(f"Unrecognized orderbook level format: {level}")
+
+bid = _price(bids[0])
+ask = _price(asks[0])
 spread = ask - bid
 print(f"  Bid: {bid:.4f} | Ask: {ask:.4f} | Spread: {spread:.4f}")
 
