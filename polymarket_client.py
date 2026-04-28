@@ -6,6 +6,7 @@ Wraps py-clob-client for order execution, balance checks, and order management.
 import os
 import logging
 import requests
+from importlib import metadata
 from decimal import Decimal, ROUND_DOWN
 from datetime import datetime, timezone
 try:
