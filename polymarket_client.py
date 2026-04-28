@@ -6,6 +6,7 @@ Wraps py-clob-client for order execution, balance checks, and order management.
 import os
 import logging
 import requests
+from importlib import metadata
 from decimal import Decimal, ROUND_DOWN
 from datetime import datetime, timezone
 try:
@@ -32,7 +33,7 @@ GEOBLOCK_MSG = (
 
 
 class PolymarketLiveClient:
-    def __init__(self, private_key: str | None = None, host: str = "https://clob.polymarket.com", chain_id: int = 137):
+    def __init__(self, private_key: str | None = None, host: str = "https://clob-v2.polymarket.com", chain_id: int = 137):
         self.private_key = private_key or os.getenv("POLYMARKET_PRIVATE_KEY")
         if not self.private_key:
             raise ValueError("Private key missing for Polymarket live client")
