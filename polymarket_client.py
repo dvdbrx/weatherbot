@@ -84,12 +84,106 @@ class PolymarketLiveClient:
         return None
 
     def get_open_positions(self) -> list:
-        """Returns a list of open and pending orders."""
+        """Back-compat alias: returns open and pending orders."""
+        return self.get_open_orders()
+
+    def get_open_orders(self) -> list:
+        """Return open/pending orders for this wallet."""
         try:
-            return self.client.get_orders()
+            orders = self.client.get_orders()
+            return orders if isinstance(orders, list) else []
         except Exception as e:
             print(f"Error fetching orders: {e}")
             return []
+
+    def get_recent_fills(self) -> list:
+        """Return recent user fills/trades from the CLOB client.
+
+        The py-clob-client surface varies by version, so we try supported
+        method names in order and gracefully fall back to [].
+        """
+        candidate_methods = ("get_trades", "get_fills", "get_user_trades")
+        for method_name in candidate_methods:
+            method = getattr(self.client, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                fills = method()
+                if isinstance(fills, list):
+                    return fills
+            except TypeError:
+                # Method exists but needs args in this library version.
+                continue
+            except Exception as e:
+                log.warning(f"Error fetching fills via {method_name}: {e}")
+                return []
+        return []
+
+    @staticmethod
+    def _extract_token_id(record: dict) -> str | None:
+        for key in ("token_id", "tokenID", "asset_id", "assetId", "market_id", "marketId"):
+            value = record.get(key)
+            if value is not None:
+                return str(value)
+        return None
+
+    @staticmethod
+    def _extract_side(record: dict) -> str | None:
+        side = record.get("side")
+        if side is None:
+            return None
+        return str(side).upper()
+
+    @staticmethod
+    def _extract_size(record: dict) -> float:
+        for key in ("size", "amount", "matched_amount", "filled_size"):
+            value = record.get(key)
+            if value is not None:
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    return 0.0
+        return 0.0
+
+    def get_wallet_exposure(self) -> dict:
+        """Build token-level exposure summary from open orders + fills."""
+        open_orders = self.get_open_orders()
+        fills = self.get_recent_fills()
+
+        pending_by_token: dict[str, float] = {}
+        for order in open_orders:
+            if not isinstance(order, dict):
+                continue
+            token_id = self._extract_token_id(order)
+            if not token_id:
+                continue
+            side = self._extract_side(order)
+            size = self._extract_size(order)
+            if size <= 0:
+                continue
+            sign = 1.0 if side == "BUY" else -1.0
+            pending_by_token[token_id] = pending_by_token.get(token_id, 0.0) + sign * size
+
+        filled_by_token: dict[str, float] = {}
+        for fill in fills:
+            if not isinstance(fill, dict):
+                continue
+            token_id = self._extract_token_id(fill)
+            if not token_id:
+                continue
+            side = self._extract_side(fill)
+            size = self._extract_size(fill)
+            if size <= 0:
+                continue
+            sign = 1.0 if side == "BUY" else -1.0
+            filled_by_token[token_id] = filled_by_token.get(token_id, 0.0) + sign * size
+
+        return {
+            "open_orders": open_orders,
+            "fills": fills,
+            "pending_by_token": pending_by_token,
+            "filled_by_token": filled_by_token,
+        }
 
     @staticmethod
     def _sanitize(price: float, size: float) -> tuple[float, float]:
