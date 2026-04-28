@@ -59,7 +59,7 @@ if signature_type in (1, 2) and not funder:
     print("   If this is a proxy/safe wallet, set POLY_FUNDER=0x...")
 
 client = ClobClient(
-    host=os.getenv("POLY_CLOB_HOST", "https://clob-v2.polymarket.com"),
+    host=os.getenv("POLY_CLOB_HOST", "https://clob.polymarket.com"),
     key=pk,
     chain_id=137,
     signature_type=signature_type,
