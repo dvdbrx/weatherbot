@@ -271,7 +271,12 @@ def scan_and_update() -> tuple[int, int, int]:
     state["equity"] = calculate_equity(state, markets)
     state["peak_equity"] = max(state.get("peak_equity", state["equity"]), state["equity"])
 
-    # Check risk guards before doing anything
+    desync, _ = reconcile_live_state(state)
+    if desync:
+        save_state(state)
+        return 0, 0, 0
+
+    # Check risk guards before doing anything else.
     halted, halt_reason = check_risk_guards(state)
     if halted:
         save_state(state)
@@ -282,11 +287,6 @@ def scan_and_update() -> tuple[int, int, int]:
             "state_desync": "🚨 State desync detected — new entries halted until local/CLOB reconciliation succeeds.",
         }
         print(_HALT_REASONS.get(halt_reason, f"⛔ Trading halted: {halt_reason}"))
-        return 0, 0, 0
-
-    desync, _ = reconcile_live_state(state)
-    if desync:
-        save_state(state)
         return 0, 0, 0
 
     if LIVE_TRADING and live_client:
